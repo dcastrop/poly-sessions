@@ -23,6 +23,7 @@ dependencies:
 - base >= 4.7 && < 5
 - poly-lang >= 0.1 && < 0.2
 - deep-sessions >= 0.1 && < 0.2
+- prettyprinter >= 1.1 && < 1.2
 
 library:
   source-dirs: src
