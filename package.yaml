@@ -1,0 +1,59 @@
+name:                poly-sessions
+version:             0.1.0
+github:              dcastrop/poly-sessions
+license:             BSD3
+author:              David Castro-Perez
+maintainer:          d.castro-perez@imperial.ac.uk
+copyright:           2017 David Castro-Perez
+
+extra-source-files:
+- README.md
+- ChangeLog.md
+
+# Metadata used when publishing your package
+synopsis:            Short description of your package
+category:            Language
+
+# To avoid duplicated efforts in documentation and dealing with the
+# complications of embedding Haddock markup inside cabal files, it is
+# common to point users to the README.md file.
+description:         Please see the README on Github at <https://github.com/dcastrop/poly-sessions#readme>
+
+dependencies:
+- base >= 4.7 && < 5
+- poly-lang >= 0.1 && < 0.2
+- deep-sessions >= 0.1 && < 0.2
+
+library:
+  source-dirs: src
+  ghc-options:
+  - -Wall
+  - -Werror
+  exposed-modules:
+  - Language.SessionTypes.RwSession
+
+executables:
+  poly-session:
+    main:                PolySession.hs
+    source-dirs:         app
+    ghc-options:
+    - -threaded
+    - -rtsopts
+    - -with-rtsopts=-N
+    - -Wall
+    - -Werror
+    dependencies:
+    - poly-sessions
+
+tests:
+  poly-sessions-test:
+    main:                Spec.hs
+    source-dirs:         test
+    ghc-options:
+    - -threaded
+    - -rtsopts
+    - -with-rtsopts=-N
+    - -Wall
+    - -Werror
+    dependencies:
+    - poly-sessions
