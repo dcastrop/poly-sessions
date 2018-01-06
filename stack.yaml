@@ -1,18 +1,14 @@
 resolver: lts-9.14
 packages:
 - .
-  # - location: https://github.com/dcastrop/quoted-prettyprinter/archive/v0.1.1.tar.gz
-  #   extra-dep: true
-  # - location: https://github.com/dcastrop/poly-lang/archive/v0.1.0.zip
-  #   extra-dep: true
-  # - location: https://github.com/dcastrop/poly-lang/archive/v0.1.0.zip
-  #   extra-dep: true
 
 extra-deps:
-- https://github.com/dcastrop/quoted-prettyprinter/archive/v0.1.1.tar.gz
-- https://github.com/dcastrop/poly-lang/archive/v0.1.0.zip
-- https://github.com/dcastrop/deep-sessions/archive/v0.1.0.zip
+# - https://github.com/dcastrop/poly-lang/archive/v0.2.0.zip
+# - https://github.com/dcastrop/quoted-prettyprinter/archive/v0.1.1.tar.gz
+# - https://github.com/dcastrop/deep-sessions/archive/v0.1.0.zip
+- ../poly-lang
+- ../deep-sessions
+- ../quoted-prettyprinter
 
 flags: {}
 extra-package-dbs: []
-compiler-check: newer-minor
