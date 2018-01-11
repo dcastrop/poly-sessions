@@ -60,6 +60,14 @@ need to do data distribution before session starts.
 
 ## From Recursion Schemes to MPST Topologies
 
+***TODO: assumptions, invariants, etc***
+
+* There is one special participant, the 'master', that first sends a/many
+  value/s, and then expects a/many response/s.
+* All workers in a global type must receive a value, followed by a number
+  of request/response interactions, and finally do their own response to the
+  original sender.
+
 ### Tree-like Algebraic Datatypes as Polynomial Functors
 
 ```math

@@ -78,6 +78,5 @@ data CExpr (t :: Type TyPrim) where
 type CCore = Core CExpr
 
 data ECore where
-    EEnd  :: ECore
-    EPush :: ECore
+    EIdle :: ECore
     EEval :: forall (t :: Type TyPrim). Sing t -> CCore t -> ECore

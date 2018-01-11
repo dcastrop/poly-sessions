@@ -23,6 +23,7 @@ dependencies:
 - base >= 4.7 && < 5
 - containers >= 0.5 && < 0.6
 - deep-sessions >= 0.1 && < 0.2
+- mtl >= 2.2 && < 2.3
 - poly-lang >= 0.2 && < 0.3
 - prettyprinter >= 1.1 && < 1.2
 - singletons >= 2.2 && < 2.3
