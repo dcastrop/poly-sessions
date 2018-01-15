@@ -8,18 +8,18 @@
 {-# LANGUAGE TypeSynonymInstances #-}
 {-# LANGUAGE ViewPatterns #-}
 module Language.Poly.C
-( PrimTy (..)
-, TyPrim (..)
-, C
-, CInt
-, CFloat
-, CNum
-, CType
-, CExpr (..)
-, CCore
-, ECore (..)
-, module X
-) where
+  ( PrimTy (..)
+  , TyPrim (..)
+  , C
+  , CInt
+  , CFloat
+  , CNum
+  , CType
+  , CExpr (..)
+  , CCore
+  , ECore (..)
+  , module X
+  ) where
 
 import Data.Singletons
   ( SingI (..)

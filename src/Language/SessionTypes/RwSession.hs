@@ -57,7 +57,19 @@ subst :: MonadError Error m
       -> Role
       -> GT v CType ECore
       -> m (GT v CType ECore)
-subst _r1 _r2 (Choice _f _t _a) = undefined
+subst [] _ _ = throwError EmptySubstitution
+subst r1@[r] r2 (Choice f t a)
+  | f == r2 = mChoice f' t' (substAlt r1 r2 a) -- XXX Substitute both in 'from'
+                                              -- and 'to' fields?
+  where
+    f' = return r
+    t' = return $ F.concatMap (substRole r1 r2) t
+subst  r1  r2 (Choice f _t _a)
+  | f == r2 = throwError (MultiChoice r1 r2)
+subst  r1  r2 (Choice f t a)    = mChoice f' t' (substAlt r1 r2 a)
+  where
+    f' = return f
+    t' = return $ F.concatMap (substRole r1 r2) t
 subst  r1  r2 (Comm    m  g)    = mComm (substMsg r1 r2 m) (subst r1 r2 g)
 subst  r1  r2 (GRec    v  g)    = mGRec (return v) (subst r1 r2 g)
 subst _r1 _r2 t@(GVar _g)       = return t
@@ -77,28 +89,39 @@ substMsg r1 r2 m = return m { rfrom = rf, rto = rt }
     rt = F.concatMap (substRole r1 r2) rtom
     rf = F.concatMap (substRole r1 r2) rfromm
 
-substRole :: RoleSpec -> Role -> Role -> [Role]
+substAlt :: MonadError Error m
+         => RoleSpec
+         -> Role
+         -> GBranch v CType ECore
+         -> m (GBranch v CType ECore)
+substAlt r1 r2 = T.mapM (subst r1 r2)
+
+substRole :: RoleSpec -> Role -> Role -> RoleSpec
 substRole r1 r2 r | r == r2    = r1
                   | otherwise = [r]
 
-step :: (MonadError Error m, GenMonad Role m) => ParSession -> m ParSession
+-- | The implementation of the core rules for rewriting a global type for
+-- parallelism.
+step :: (MonadError Error m, GenMonad Role m)
+     => ParSession
+     -> m (Maybe ParSession)
 
 -- Rule: end-protocol
 step (Comm msg@(msgAnn -> EEval _ Id) GEnd) =
-    return $ msg { msgAnn = EIdle } ... GEnd
+    return $ Just msg { msgAnn = EIdle } ... GEnd
 
 -- Rule: short-circuit
 -- m -> ws : A @ { id } . G
 --    === G [ m / ws ]     <=== G /= end
 step (Comm (Msg  rf  rt _pl (EEval (_t1 `STArr` _t1') Id)) cont) =
-    F.foldl' (\f x -> f <=< subst rf x) return rt cont
+    F.foldl' (\f x -> f <=< subst rf x) (return . Just) rt cont
 
 -- Rule: pipeline
 -- m -> ws : A @ { f . g } . G
 --    === m -> w : A @ { f } . w -> ws : B @ { g } . G
 step (Comm (Msg rf rt _pl (EEval (STArr _t1 _t3) (f `Comp` g))) cont) =
   do w1    <- fresh "w"
-     return $
+     return $ Just $
        Msg rf [w1] (fromSing (dom gty)) (EEval gty g)
        ... Msg [w1] rt (fromSing (cod gty)) (EEval fty f)
        ... cont
@@ -115,22 +138,32 @@ step (Comm (Msg rf rt pl (EEval _ty (f `Split` g))) cont) =
   -- First split [rt]
   do rt1 <- T.mapM (fresh . const "w") rt
      rt2 <- T.mapM (fresh . const "w") rt
-  -- then create sub-messages
+  -- then rewrite each r \in rt into a pair of (r1,r2) with r1 \in rt1 and r2
+  -- \in rt2
      cont' <- F.foldlM (\c (r1,r2) -> subst r1 r2 c) cont $
                zip (zipWith (\a b -> [a,b]) rt1 rt2) rt
-     return $
+     return $ Just $
        Msg rf rt1 pl (EEval (typeOf f) f)
        ... Msg rf rt2 pl (EEval (typeOf g) g)
        ... cont'
 
--- --  FIXME: annotations not on every message, but on particular points:
--- --    r -> m : A . G puts a value of type 'A' in the context. The function in
--- --
--- --  In Haskell this corresponds to using a Maybe ann as annotation for Msg.
--- --
--- -- With choice, if there is a context T, a choice:
--- --
--- -- r -> m : { l1 : G1, ... ln : Gn} means that, at the beginning of Gi there
--- -- will be a value in a context of sum type  T_1 + ... + T_i-1 + T + T_i+1 + ...  -- + T_n
+-- Rule: case
+-- m -> w* : A + B @ {f \/ g}. G
+--     ===
 --
-step x = return x
+--        m -> w* { 0: m -> w* : A @ {f}. G
+--                , 1: m -> w* : B @ {g}. G
+--                }
+
+step (Comm (Msg rf@[r] rt _pl (EEval _ty (f `Case` g))) cont) =
+    return $ Just $
+      Choice r rt $
+        addAlt 0 EIdle (Comm (Msg rf rt plf (EEval dfty f)) cont) $
+        addAlt 1 EIdle (Comm (Msg rf rt plg (EEval dgty g)) cont) emptyAlt
+  where
+    plf = fromSing $ dom dfty
+    plg = fromSing $ dom dgty
+    dfty = typeOf f
+    dgty = typeOf g
+
+step _x = return Nothing
