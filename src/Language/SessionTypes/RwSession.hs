@@ -7,16 +7,19 @@
 {-# LANGUAGE TypeOperators #-}
 {-# LANGUAGE ViewPatterns #-}
 module Language.SessionTypes.RwSession
-  where
---  ( CCore
---  , ParSession
---  , RoleSpec (..)
---  , embed
---  , step
---  ) where
+  ( CCore
+  , ParSession
+  , embed
+  , step
+  , congr
+  , trans
+  , rewrite
+  ) where
 
 import Control.Monad ( (<=<) )
 import Control.Monad.Except ( MonadError(..) )
+import Control.Monad.State ( MonadState(..) )
+import qualified Control.Monad.State as State
 import qualified Data.Traversable as T
 import qualified Data.Foldable as F
 import Data.Singletons
@@ -29,6 +32,8 @@ import Language.SessionTypes
 -- []          m -> w : A { [] } . [
 -- f : A -> B
 type ParSession = GT Id CType ECore
+
+type ParBranch = GBranch Id CType ECore
 
 class Monad m => GenMonad v m where
   fresh :: String -> m v
@@ -100,15 +105,64 @@ substRole :: RoleSpec -> Role -> Role -> RoleSpec
 substRole r1 r2 r | r == r2    = r1
                   | otherwise = [r]
 
+-- XXX REFACTOR
+mergeRoles :: [Role] -> [Role] -> [Role]
+mergeRoles r1 r2 = r1 ++ [r | r <- r2, r `notElem` r1]
+
+rewrite :: (MonadError Error m, GenMonad Role m, MonadState [Role] m)
+        => ParSession -> m ParSession
+rewrite = trans (congr step)
+
+-- | Transitive closure
+trans :: (MonadError Error m, GenMonad Role m, MonadState [Role] m)
+      => (ParSession -> m (Maybe ParSession))
+      -> ParSession -> m ParSession
+trans rw p = do mp <- rw p
+                case mp of
+                  Just p' -> trans rw p'
+                  Nothing -> return p
+
+-- | Congruence rules
+congr :: (MonadError Error m, GenMonad Role m, MonadState [Role] m)
+        => (ParSession -> m (Maybe ParSession))
+        -> ParSession
+        -> m (Maybe ParSession)
+congr  rw g@(Choice  fr  tr  a1) =
+  do mg <- rw g
+     case mg of
+       Just _ -> return mg
+       Nothing ->
+         do ma <- congrAlt rw a1
+            case ma of
+              Nothing -> return Nothing
+              Just a2 ->
+                do nr <- fmap (mergeRoles tr) get
+                   return $ Just $ Choice fr nr a2
+congr  rw g@(Comm    m1  g1) =
+  do mg <- rw g
+     case mg of
+       Just _  -> return mg
+       Nothing -> fmap (fmap (Comm m1)) $ congr rw g1
+congr  rw   (GRec    v1  g1)     = fmap (fmap (GRec v1)) $ congr rw g1
+congr _rw   (GVar   _v1)         = return Nothing
+congr _rw   GEnd                 = return Nothing
+
+congrAlt :: (MonadError Error m, GenMonad Role m, MonadState [Role] m)
+        => (ParSession -> m (Maybe ParSession))
+        -> ParBranch
+        -> m (Maybe ParBranch)
+congrAlt rw a = do ma <- T.traverse (congr rw) a
+                   return $ T.sequence ma
+
 -- | The implementation of the core rules for rewriting a global type for
 -- parallelism.
-step :: (MonadError Error m, GenMonad Role m)
+step :: (MonadError Error m, GenMonad Role m, MonadState [Role] m)
      => ParSession
      -> m (Maybe ParSession)
 
 -- Rule: end-protocol
 step (Comm msg@(msgAnn -> EEval _ Id) GEnd) =
-    return $ Just msg { msgAnn = EIdle } ... GEnd
+    return $ Just $ msg { msgAnn = EIdle } ... GEnd
 
 -- Rule: short-circuit
 -- m -> ws : A @ { id } . G
@@ -121,6 +175,7 @@ step (Comm (Msg  rf  rt _pl (EEval (_t1 `STArr` _t1') Id)) cont) =
 --    === m -> w : A @ { f } . w -> ws : B @ { g } . G
 step (Comm (Msg rf rt _pl (EEval (STArr _t1 _t3) (f `Comp` g))) cont) =
   do w1    <- fresh "w"
+     State.modify' (w1:)
      return $ Just $
        Msg rf [w1] (fromSing (dom gty)) (EEval gty g)
        ... Msg [w1] rt (fromSing (cod gty)) (EEval fty f)
@@ -138,7 +193,8 @@ step (Comm (Msg rf rt pl (EEval _ty (f `Split` g))) cont) =
   -- First split [rt]
   do rt1 <- T.mapM (fresh . const "w") rt
      rt2 <- T.mapM (fresh . const "w") rt
-  -- then rewrite each r \in rt into a pair of (r1,r2) with r1 \in rt1 and r2
+     F.mapM_ (State.modify . (:)) $ rt1 ++ rt2
+  -- then congr each r \in rt into a pair of (r1,r2) with r1 \in rt1 and r2
   -- \in rt2
      cont' <- F.foldlM (\c (r1,r2) -> subst r1 r2 c) cont $
                zip (zipWith (\a b -> [a,b]) rt1 rt2) rt
