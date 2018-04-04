@@ -2,6 +2,8 @@
 {-# LANGUAGE ExistentialQuantification #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE GADTs #-}
+{-# LANGUAGE MultiParamTypeClasses #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE TypeInType #-}
 {-# LANGUAGE TypeOperators #-}
@@ -18,6 +20,8 @@ module Language.Poly.C
   , CExpr (..)
   , CCore
   , ECore (..)
+  , getDom
+  , getCod
   , module X
   ) where
 
@@ -28,10 +32,13 @@ import Data.Singletons
 import Data.Singletons.TypeLits as Sing
 
 import Language.Poly as X
+import Language.Poly.Erasure ( Erasure (..) )
+import Language.Poly.UCore()
 
 -- Primitive functions and operations
 data TyPrim = TInt32 | TFloat32 | TVector Sing.Nat TyPrim
 data PrimTy = Int32  | Float32  | Vector Integer PrimTy
+  deriving Eq
 
 data instance Sing (t :: TyPrim) where
     SInt32 :: Sing 'TInt32
@@ -75,8 +82,40 @@ data CExpr (t :: Type TyPrim) where
     Get   :: CExpr (C ('TVector i a) ':-> CInt ':-> C a)
     Put   :: CExpr (CInt ':-> C a ':-> C ('TVector i a) ':-> C ('TVector i a))
 
+data UCExpr t where
+    UPlus  :: UCExpr t
+    UMinus :: UCExpr t
+    UMult  :: UCExpr t
+    UDiv   :: UCExpr t
+    UMod   :: UCExpr t
+    UGet   :: UCExpr t
+    UPut   :: UCExpr t
+    deriving Eq
+
+instance Erasure CExpr UCExpr where
+  erase Plus  = UPlus
+  erase Minus = UMinus
+  erase Mult  = UMult
+  erase Div   = UDiv
+  erase Mod   = UMod
+  erase Get   = UGet
+  erase Put   = UPut
+
 type CCore = Core CExpr
 
 data ECore where
     EIdle :: ECore
     EEval :: forall (t :: Type TyPrim). Sing t -> CCore t -> ECore
+
+instance Eq ECore where
+  EIdle       == EIdle       = True
+  EEval t1 e1 == EEval t2 e2 = fromSing t1 == fromSing t2 && erase e1 == erase e2
+  _           == _           = False
+
+getDom :: forall (a :: Type TyPrim) (b :: Type TyPrim). (SingI a, SingI b)
+    => CCore (a ':-> b) -> CType
+getDom _ = fromSing (sing :: Sing a)
+
+getCod :: forall (a :: Type TyPrim) (b :: Type TyPrim). (SingI a, SingI b)
+    => CCore (a ':-> b) -> CType
+getCod _ = fromSing (sing :: Sing b)
