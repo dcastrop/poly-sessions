@@ -92,14 +92,15 @@ simplStepAlts b = concatMap simplStepAlt ks
         tag (e, g) = (CChoice k e, Alt $ Map.insert k g m)
 
 simpl :: Proto -> [(Equiv, Proto)]
-simpl p = case simplStep p of
-            [] -> [(Refl, p)]
-            l  -> concatMap go l
+simpl p = aux (10 :: Int) p
   where
-    go (e, p') = map (\(e', p'') -> (trans e e', p'')) $ simpl p'
+    go n (e, p') = map (\(e', p'') -> (trans e e', p'')) $ aux n p'
     trans Refl r = r
     trans r Refl = r
     trans r1 r2 = Trans r1 r2
+    aux n pr
+      | n <= 0 = [(Refl, pr)]
+      | otherwise = concatMap (go $ n-1) $ simplStep pr
 
 simplStep :: Proto -> [(Equiv, Proto)]
 simplStep (Choice f a) = map mkChoice $ simplStepAlts a
@@ -120,9 +121,10 @@ simplStep t@(GComp Seq g1 g2) =
 simplStep _ = []
 
 allRules :: [Equiv]
-allRules = [ AssocPar, AssocSeq, SeqPar, CommutPar, DistParL, AssocParSeq
-           , AssocSeqPar, SplitRecv 1, SplitSend 1, DistHide, CommutHide
-           , IdL, IdR, Bypass, CancelSplit, CancelAlt ]
+allRules = [ SplitRecv 1, SplitSend 1, DistHide, Sym DistHide
+           , IdL, IdR, Bypass, CancelSplit, CancelAlt
+           , SeqPar,  DistParL, AssocParSeq
+           , AssocSeqPar, AssocPar, AssocSeq, CommutPar, CommutHide ]
 
 data Equiv
   -- Equivalence

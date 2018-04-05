@@ -53,6 +53,17 @@ exgen3 = gsplit (lift inc) (lift Id)
 example3 :: Proto
 example3 = getGen exgen3 (Rol 0) (Rol 1)
 
+type Ex1 = 'PProd 'PId 'PId
+
+exgen4 :: 'TProd CInt CInt :=> 'TProd CInt CInt
+exgen4 = gfmap (sing :: Sing Ex1) (lift inc)
+
+example4 :: Proto
+example4 = getGen exgen4 (Rol 0) (Rol 1)
+
+exrw4 :: [(Equiv, Proto)]
+exrw4 = simplStep example4
+
 
 -- RING
 -- Poly Level
