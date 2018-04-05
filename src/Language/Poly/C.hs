@@ -9,6 +9,7 @@
 {-# LANGUAGE TypeOperators #-}
 {-# LANGUAGE TypeSynonymInstances #-}
 {-# LANGUAGE ViewPatterns #-}
+{-# LANGUAGE QuasiQuotes #-}
 module Language.Poly.C
   ( PrimTy (..)
   , TyPrim (..)
@@ -31,6 +32,9 @@ import Data.Singletons
   , SomeSing(..) )
 import Data.Singletons.TypeLits as Sing
 
+import Data.Text.Prettyprint.Doc ( Pretty, pretty )
+import Data.Text.Prettyprint.EDoc
+
 import Language.Poly as X
 import Language.Poly.Erasure ( Erasure (..) )
 import Language.Poly.UCore()
@@ -38,7 +42,10 @@ import Language.Poly.UCore()
 -- Primitive functions and operations
 data TyPrim = TInt32 | TFloat32 | TVector Sing.Nat TyPrim
 data PrimTy = Int32  | Float32  | Vector Integer PrimTy
-  deriving Eq
+  deriving (Eq, Show)
+
+instance Pretty PrimTy where
+  pretty t = [ppr| show t |]
 
 data instance Sing (t :: TyPrim) where
     SInt32 :: Sing 'TInt32
@@ -74,15 +81,18 @@ instance CNum 'TFloat32 where
 type CType = Type PrimTy
 
 data CExpr (t :: Type TyPrim) where
-    Plus  :: CNum a => CExpr (C a ':-> C a ':-> C a)
-    Minus :: CNum a => CExpr (C a ':-> C a ':-> C a)
-    Mult  :: CNum a => CExpr (C a ':-> C a ':-> C a)
-    Div   :: CNum a => CExpr (C a ':-> C a ':-> C a)
-    Mod   :: CNum a => CExpr (C a ':-> C a ':-> C a)
-    Get   :: CExpr (C ('TVector i a) ':-> CInt ':-> C a)
-    Put   :: CExpr (CInt ':-> C a ':-> C ('TVector i a) ':-> C ('TVector i a))
+    CInt  :: Int -> CExpr CInt
+    Plus  :: CNum a => CExpr ('TProd (C a) (C a) ':-> C a)
+    Minus :: CNum a => CExpr ('TProd (C a) (C a) ':-> C a)
+    Mult  :: CNum a => CExpr ('TProd (C a) (C a) ':-> C a)
+    Div   :: CNum a => CExpr ('TProd (C a) (C a) ':-> C a)
+    Mod   :: CNum a => CExpr ('TProd (C a) (C a) ':-> C a)
+    Get   :: CExpr ('TProd (C ('TVector i a)) CInt ':-> C a)
+    Put   :: CExpr ('TProd ('TProd CInt (C a)) (C ('TVector i a))
+                   ':-> C ('TVector i a))
 
 data UCExpr t where
+    UCInt  :: Int -> UCExpr t
     UPlus  :: UCExpr t
     UMinus :: UCExpr t
     UMult  :: UCExpr t
@@ -92,7 +102,18 @@ data UCExpr t where
     UPut   :: UCExpr t
     deriving Eq
 
-instance Erasure CExpr UCExpr where
+instance Pretty (UCExpr PrimTy) where
+  pretty (UCInt i) = [ppr| i|]
+  pretty UPlus     = [ppr| "plus" |]
+  pretty UMinus    = [ppr| "minus" |]
+  pretty UMult     = [ppr| "mult" |]
+  pretty UDiv      = [ppr| "div" |]
+  pretty UMod      = [ppr| "mod" |]
+  pretty UGet      = [ppr| "get" |]
+  pretty UPut      = [ppr| "put" |]
+
+instance Erasure TyPrim CExpr UCExpr where
+  erase (CInt i) = UCInt i
   erase Plus  = UPlus
   erase Minus = UMinus
   erase Mult  = UMult
@@ -106,6 +127,10 @@ type CCore = Core CExpr
 data ECore where
     EIdle :: ECore
     EEval :: forall (t :: Type TyPrim). Sing t -> CCore t -> ECore
+
+instance Pretty ECore where
+  pretty EIdle = [ppr| "idle" |]
+  pretty (EEval _ c)= [ppr| c |]
 
 instance Eq ECore where
   EIdle       == EIdle       = True

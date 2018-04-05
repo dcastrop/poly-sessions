@@ -1,14 +1,22 @@
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
+{-# LANGUAGE TupleSections #-}
 module Language.SessionTypes.RwSession
   ( Equiv(..)
   , Dir (..)
   , rwL, rwR
   , subst
+  , simplStep
+  , simpl
   ) where
 
+import Data.Text.Prettyprint.Doc ( Pretty, pretty )
+
+import Data.Maybe ( catMaybes )
+import Data.Map.Strict ( Map )
 import qualified Data.Set as Set
+import qualified Data.Map as Map
 import Control.Monad.Except
 import qualified Data.Foldable as F
 import qualified Data.Traversable as T
@@ -71,6 +79,50 @@ substRole r1 r2 r | r == r2    = r1
 type RW t = t -> Maybe t
 
 data Dir = L | R
+  deriving Show
+
+simplStepAlts :: GBranch CType ECore -> [(Equiv, GBranch CType ECore)]
+simplStepAlts b = concatMap simplStepAlt ks
+  where
+    m = altMap b
+    ks = Map.keys m
+    simplStepAlt k = map tag eqs
+      where
+        eqs = simplStep $ m Map.! k
+        tag (e, g) = (CChoice k e, Alt $ Map.insert k g m)
+
+simpl :: Proto -> [(Equiv, Proto)]
+simpl p = case simplStep p of
+            [] -> [(Refl, p)]
+            l  -> concatMap go l
+  where
+    go (e, p') = map (\(e', p'') -> (trans e e', p'')) $ simpl p'
+    trans Refl r = r
+    trans r Refl = r
+    trans r1 r2 = Trans r1 r2
+
+simplStep :: Proto -> [(Equiv, Proto)]
+simplStep (Choice f a) = map mkChoice $ simplStepAlts a
+  where
+    mkChoice (e, b) = (e, Choice f b)
+simplStep t@(NewRole r g1) =
+    map (\(rl, g1') -> (CNewRole rl, NewRole r g1')) (simplStep g1) ++
+    (catMaybes $ fmap (Hide r,) (rwR (Hide r) t) :
+                 map (\rl -> fmap (rl,) $ rwL rl t) allRules)
+simplStep t@(GComp Par g1 g2) =
+    catMaybes $ (map (\rl -> fmap ((CPar L rl,) . flip gPar g2) $ rwL rl g1) allRules)
+                ++ map (\rl -> fmap ((CPar R rl,) . gPar g1) $ rwL rl g2) allRules
+                ++ map (\rl -> fmap (rl,) $ rwL rl t) allRules
+simplStep t@(GComp Seq g1 g2) =
+    catMaybes $ (map (\rl -> fmap ((CPar L rl,) . flip gSeq g2) $ rwL rl g1) allRules)
+                ++ map (\rl -> fmap ((CPar R rl,) . gSeq g1) $ rwL rl g2) allRules
+                ++ map (\rl -> fmap (rl,) $ rwL rl t) allRules
+simplStep _ = []
+
+allRules :: [Equiv]
+allRules = [ AssocPar, AssocSeq, SeqPar, CommutPar, DistParL, AssocParSeq
+           , AssocSeqPar, SplitRecv 1, SplitSend 1, DistHide, CommutHide
+           , IdL, IdR, Bypass, CancelSplit, CancelAlt ]
 
 data Equiv
   -- Equivalence
@@ -81,13 +133,18 @@ data Equiv
   | CNewRole Equiv
   | CPar Dir Equiv
   | CSeq Dir Equiv
+  | SubstPar Equiv
 
   -- Rules
   | AssocPar | AssocSeq | SeqPar | CommutPar | DistParL
   | AssocParSeq | AssocSeqPar | SplitRecv Int | SplitSend Int
-  | Hide Role | DistHide | AlphaConv Role
+  | Hide Role | DistHide | AlphaConv Role | CommutHide
   | IdL | IdR | Bypass
-  | CancelSplit | CancelAlt | SubstPar
+  | CancelSplit | CancelAlt
+  deriving Show
+
+instance Pretty Equiv where
+  pretty = pretty . show
 
 rwL :: Equiv -> RW Proto
 rwL Refl          = return
@@ -205,8 +262,14 @@ rwL (AlphaConv r1) = \g1 ->
 rwL DistHide = \g ->
   case g of
     NewRole r1 (GComp o g1 g2)
+      | r1 `Set.notMember` (outr g1 `Set.union` inr g2)
       -> Just $ GComp o (NewRole r1 g1) (NewRole r1 g2)
     _ -> Nothing
+
+rwL CommutHide = \g ->
+  case g of
+    NewRole r1 (NewRole r2 g') -> Just $ NewRole r2 (NewRole r1 g')
+    _                         -> Nothing
 
 rwL IdL = \g ->
   case g of
@@ -244,9 +307,39 @@ rwL Bypass = \g ->
              else Nothing
     _ -> Nothing
 
---  | CancelSplit | CancelAlt | SubstPar
+rwL CancelSplit = \g ->
+  case g of
+    NewRole r1 (NewRole r2
+                (GComp Seq (GComp Par (Comm m1) (Comm m2))
+                (Comm m3)))
+      | rfrom m1 == rfrom m2
+      , rto m1 == [r1]
+      , rto m2 == [r2]
+      , rfrom m3 == [r1,r2] || rfrom m3 == [r2, r1]
+      , isFst (msgAnn m1)
+      , isSnd (msgAnn m2)
+        -> Just $ Comm m3 { rfrom = rfrom m1 }
+    _ -> Nothing
 
-rwL _ = const Nothing
+rwL CancelAlt = \g ->
+  case g of
+    GComp Seq (Comm m1) (Choice r br)
+      | rto m1 == [r]
+      , Just i <- isInj (msgAnn m1)
+        -> fmap (GComp Seq (Comm m1 { msgAnn = EIdle })) (getAlt i br)
+    _ -> Nothing
+
+rwL (SubstPar e) =  \g ->
+  case g of
+    NewRole r (GComp Seq g1 (GComp Par g2 g3))
+      | r `Set.member` outr g1
+      , r `Set.member` inr g2
+      , Just (GComp Seq g1' g2') <- rwL e (NewRole r $ GComp Seq g1 g2)
+      , Just [(ra,r')] <- fmap (Map.toList . getSubst) $ alphaEquiv g1 g1'
+      , ra == r
+      , r' `Set.notMember` fr g3
+      -> fmap (GComp Seq g1' . GComp Par g2') (subst [r'] r g3)
+    _ -> Nothing
 
 rwR :: Equiv -> RW Proto
 rwR Refl          = return
@@ -336,7 +429,7 @@ rwR (SplitSend _) = \g ->
 
 rwR (Hide r) = \g ->
   case g of
-    NewRole r1 g' | r == r1, r `Set.notMember` fr g -> Just g'
+    NewRole r1 g' | r == r1, r `Set.notMember` fr g' -> Just g'
     _ -> Nothing
 
 rwR (AlphaConv r1) = \g1 ->
@@ -352,132 +445,73 @@ rwR DistHide = \g ->
       | r1 == r2 -> Just $ NewRole r1 (GComp o g1 g2)
     _ -> Nothing
 
--- TODO
---rwR IdL = \g ->
---rwR IdR = \g ->
---rwR BypassSplit = \g ->
---rwR SubstPar = \g ->
+rwR CommutHide = \g ->
+  case g of
+    NewRole r1 (NewRole r2 g') -> Just $ NewRole r2 (NewRole r1 g')
+    _                         -> Nothing
 
 rwR _ = const Nothing
 
--- -- XXX REFACTOR
--- mergeRoles :: [Role] -> [Role] -> [Role]
--- mergeRoles r1 r2 = r1 ++ [r | r <- r2, r `notElem` r1]
---
--- rewrite :: (MonadError Error m, GenMonad Role m, MonadState [Role] m)
---         => ParSession -> m ParSession
--- rewrite = trans (congr step)
---
--- -- | Transitive closure
--- trans :: (MonadError Error m, GenMonad Role m, MonadState [Role] m)
---       => (ParSession -> m (Maybe ParSession))
---       -> ParSession -> m ParSession
--- trans rw p = do mp <- rw p
---                 case mp of
---                   Just p' -> trans rw p'
---                   Nothing -> return p
---
--- -- | Congruence rules
--- congr :: (MonadError Error m, GenMonad Role m, MonadState [Role] m)
---         => (ParSession -> m (Maybe ParSession))
---         -> ParSession
---         -> m (Maybe ParSession)
--- congr  rw g@(Choice  fr  tr  a1) =
---   do mg <- rw g
---      case mg of
---        Just _ -> return mg
---        Nothing ->
---          do ma <- congrAlt rw a1
---             case ma of
---               Nothing -> return Nothing
---               Just a2 ->
---                 do nr <- fmap (mergeRoles tr) get
---                    return $ Just $ Choice fr nr a2
--- congr  rw g@(Comm    m1  g1) =
---   do mg <- rw g
---      case mg of
---        Just _  -> return mg
---        Nothing -> fmap (fmap (Comm m1)) $ congr rw g1
--- congr  rw   (GRec    v1  g1)     = fmap (fmap (GRec v1)) $ congr rw g1
--- congr _rw   (GVar   _v1)         = return Nothing
--- congr _rw   GEnd                 = return Nothing
---
--- congrAlt :: (MonadError Error m, GenMonad Role m, MonadState [Role] m)
---         => (ParSession -> m (Maybe ParSession))
---         -> ParBranch
---         -> m (Maybe ParBranch)
--- congrAlt rw a = do ma <- T.traverse (congr rw) a
---                    return $ T.sequence ma
---
--- -- | The implementation of the core rules for rewriting a global type for
--- -- parallelism.
--- step :: (MonadError Error m, GenMonad Role m, MonadState [Role] m)
---      => ParSession
---      -> m (Maybe ParSession)
---
--- -- Rule: end-protocol
--- step (Comm msg@(msgAnn -> EEval _ Id) GEnd) =
---     return $ Just $ msg { msgAnn = EIdle } ... GEnd
---
--- -- Rule: short-circuit
--- -- m -> ws : A @ { id } . G
--- --    === G [ m / ws ]     <=== G /= end
--- step (Comm (Msg  rf  rt _pl (EEval (_t1 `STArr` _t1') Id)) cont) =
---     F.foldl' (\f x -> f <=< subst rf x) (return . Just) rt cont
---
--- -- Rule: pipeline
--- -- m -> ws : A @ { f . g } . G
--- --    === m -> w : A @ { f } . w -> ws : B @ { g } . G
--- step (Comm (Msg rf rt _pl (EEval (STArr _t1 _t3) (f `Comp` g))) cont) =
---   do w1    <- fresh "w"
---      State.modify' (w1:)
---      return $ Just $
---        Msg rf [w1] (fromSing (dom gty)) (EEval gty g)
---        ... Msg [w1] rt (fromSing (cod gty)) (EEval fty f)
---        ... cont
---   where
---     fty = typeOf f
---     gty = typeOf g
---
--- -- Rule: split
--- -- m -> {w1, ..., wn} : A @ {f /\ g}. G
--- --     ===   m -> {w11, ..., wn1} : A @ { f }
--- --         . m -> {w12, ..., wn2} : A @ { g }
--- --         . G [ w11 x w12 / w1, ..., wn1 x wn2 / wn ]
--- step (Comm (Msg rf rt pl (EEval _ty (f `Split` g))) cont) =
---   -- First split [rt]
---   do rt1 <- T.mapM (fresh . const "w") rt
---      rt2 <- T.mapM (fresh . const "w") rt
---      F.mapM_ (State.modify . (:)) $ rt1 ++ rt2
---   -- then congr each r \in rt into a pair of (r1,r2) with r1 \in rt1 and r2
---   -- \in rt2
---      cont' <- F.foldlM (\c (r1,r2) -> subst r1 r2 c) cont $
---                zip (zipWith (\a b -> [a,b]) rt1 rt2) rt
---      return $ Just $
---        Msg rf rt1 pl (EEval (typeOf f) f)
---        ... Msg rf rt2 pl (EEval (typeOf g) g)
---        ... cont'
---
--- -- Rule: case
--- -- m -> w* : A + B @ {f \/ g}. G
--- --     ===
--- --
--- --        m -> w* { 0: m -> w* : A @ {f}. G
--- --                , 1: m -> w* : B @ {g}. G
--- --                }
---
--- step (Comm (Msg rf@[r] rt _pl (EEval _ty (f `Case` g))) cont) =
---     return $ Just $
---       Choice r rt $
---         addAlt 0 EIdle (Comm (Msg rf rt plf (EEval dfty f)) cont) $
---         addAlt 1 EIdle (Comm (Msg rf rt plg (EEval dgty g)) cont) emptyAlt
---   where
---     plf = fromSing $ dom dfty
---     plg = fromSing $ dom dgty
---     dfty = typeOf f
---     dgty = typeOf g
---
--- step _x = return Nothing
+newtype AlphaEq = AlphaEq { getSubst :: Map Role Role }
+
+alphaEquiv :: Proto -> Proto -> Maybe AlphaEq
+alphaEquiv (Choice r1 br1) (Choice r2 br2)
+  | Just s <- alphaBranch br1 br2
+  = if r1 == r2 then Just s
+    else do s' <- insertSubst (r1,r2) $ getSubst s
+            return s { getSubst = s' }
+alphaEquiv (Comm m1)       (Comm m2)       = alphaMsg m1 m2
+alphaEquiv (NewRole r1 g1) (NewRole _ g2)
+  | Just s <- alphaEquiv g1 g2
+  = Just $ AlphaEq $ Map.delete r1 $ getSubst s
+alphaEquiv (GComp o1 g11 g12) (GComp o2 g21 g22)
+  | o1 == o2
+  , Just s1 <- alphaEquiv g11 g21
+  , Just s2 <- alphaEquiv g12 g22
+  = fmap AlphaEq $ getSubst s1 `unionSubst` getSubst s2
+alphaEquiv GSkip           GSkip           = Just $ AlphaEq Map.empty
+alphaEquiv _               _               = Nothing
+
+insertSubst :: (Role, Role) -> Map Role Role -> Maybe (Map Role Role)
+insertSubst (r1, r2) m
+  | Just r3 <- Map.lookup r1 m, r2 == r3 = Just m
+  | Nothing <- Map.lookup r1 m          = Just $ Map.insert r1 r2 m
+  | otherwise                          = Nothing
+
+unionSubst :: Map Role Role -> Map Role Role -> Maybe (Map Role Role)
+unionSubst m1 m2 = Map.foldlWithKey' add (Just m2) m1
+    where
+      add ms1 r1 r2 = ms1 >>= insertSubst (r1,r2)
+
+alphaBranch :: GBranch CType ECore -> GBranch CType ECore -> Maybe AlphaEq
+alphaBranch b1 b2 = go (altMap b1) (altMap b2)
+  where
+    go m1 m2
+      | Map.size m1 == 0, Map.size m2 == 0 = Just $ AlphaEq Map.empty
+      | Map.size m1 == 0  = Nothing
+      | Map.size m2 == 0  = Nothing
+      | otherwise
+      = case Map.deleteFindMin m1 of
+          ((lbl, g1), m1') ->
+            do g1' <- Map.lookup lbl m2
+               s1 <- alphaEquiv g1 g1'
+               s2 <- go m1' (Map.delete lbl m2)
+               fmap AlphaEq $ unionSubst (getSubst s1) (getSubst s2)
+
+alphaMsg :: Msg CType ECore -> Msg CType ECore -> Maybe AlphaEq
+alphaMsg m1 m2
+  | rty m1 == rty m2, msgAnn m1 == msgAnn m2 =
+      do s1 <- alphaRoles (rfrom m1) (rfrom m2)
+         s2 <- alphaRoles (rto m1) (rto m2)
+         fmap AlphaEq $ unionSubst s1 s2
+  | otherwise = Nothing
+
+alphaRoles :: [Role] -> [Role] -> Maybe (Map Role Role)
+alphaRoles [] [] = Just Map.empty
+alphaRoles (r1:rs1) (r2:rs2)
+  | r1 == r2 = alphaRoles rs1 rs2
+  | otherwise = alphaRoles rs1 rs2 >>= insertSubst (r1,r2)
+alphaRoles _ _ = Nothing
 
 isId :: ECore -> Bool
 isId EIdle = True
@@ -491,3 +525,9 @@ isFst _             = False
 isSnd :: ECore -> Bool
 isSnd (EEval _ Snd) = True
 isSnd _            = False
+
+
+isInj :: ECore -> Maybe Int
+isInj (EEval _ Inl) = Just 1
+isInj (EEval _ Inr) = Just 2
+isInj _             = Nothing
