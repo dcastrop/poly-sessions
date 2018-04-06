@@ -8,9 +8,9 @@ module Language.SessionTypes.Examples
 where
 
 import Data.Singletons
-import Data.Text.Prettyprint.Doc ( Pretty, pretty )
-import Data.Text.Prettyprint.EDoc
+import Data.Text.Prettyprint.Doc ( pretty )
 
+import Language.Poly
 import Language.Poly.C
 import Language.SessionTypes.Common
 import Language.SessionTypes.Combinators
@@ -24,45 +24,37 @@ iter i comp idf f
 
 
 
-exgen1 :: CInt :=> CInt
-exgen1 = lift (Id :: CCore (CInt ':-> CInt))
-
-example1 :: Proto
-example1 = getGen exgen1 (Rol 0) (Rol 1)
+example1 :: CInt :=> CInt
+example1 = lift (Id :: CCore (CInt ':-> CInt))
 
 inc :: CCore (CInt ':-> CInt)
 inc = Prim Plus `Comp` Split Id (Const $ Prim $ CInt 1)
 
-exgen2 :: CInt :=> CInt
-exgen2 = lift inc `gcomp` exgen1
+example2 :: CInt :=> CInt
+example2 = lift inc `gcomp` example1
 
-example2 :: Proto
-example2 = getGen exgen2 (Rol 0) (Rol 1)
-
-exrw21 :: Maybe Proto
-exrw21 = rwL strat example2
-  where
-    strat = IdL
-
-exrw22 :: [(Equiv, Proto)]
-exrw22 = simpl example2
-
-exgen3 :: CInt :=> 'TProd CInt CInt
-exgen3 = gsplit (lift inc) (lift Id)
-
-example3 :: Proto
-example3 = getGen exgen3 (Rol 0) (Rol 1)
+example3 :: CInt :=> 'TProd CInt CInt
+example3 = gsplit (lift inc) (lift Id)
 
 type Ex1 = 'PProd 'PId 'PId
 
-exgen4 :: 'TProd CInt CInt :=> 'TProd CInt CInt
-exgen4 = gfmap (sing :: Sing Ex1) (lift inc)
+example4 :: 'TProd CInt CInt :=> 'TProd CInt CInt
+example4 = gfmap (sing :: Sing Ex1) (lift inc)
 
-example4 :: Proto
-example4 = getGen exgen4 (Rol 0) (Rol 1)
+example5 :: 'TProd CInt CInt :=> 'TProd CInt CInt
+example5 = gsplit (lift Fst) (lift Snd)
 
-exrw4 :: [(Equiv, Proto)]
-exrw4 = simplStep example4
+testProto :: a :=> b -> IO ()
+testProto g = putStrLn $ show $ pretty $ getGen g (Rol 0) (Rol 1)
+
+testRw :: a :=> b -> IO ()
+testRw g = putStrLn $ show $ pretty $ step $ getGen g (Rol 0) (Rol 1)
+
+testSimpl :: a :=> b -> IO ()
+testSimpl g = putStrLn $ show $ pretty $ simpl $ getGen g (Rol 0) (Rol 1)
+
+testEquiv :: Equiv -> a :=> b -> IO ()
+testEquiv e g = putStrLn $ show $ pretty $ simplStep [e] $ getGen g (Rol 0) (Rol 1)
 
 
 -- RING
@@ -125,8 +117,5 @@ ex1Session f g =
        `gcomp` gpermute) `gcomp`
     gfmap (sing :: Sing V3) (gsplit (lift Id) (lift f))
 
-ex1Proto :: Proto
-ex1Proto = getGen (ex1Session Id intPlus) (Rol 0) (Rol 1)
-  where
-    intPlus :: CCore ('TProd CInt CInt ':-> CInt)
-    intPlus = Prim Plus
+ex1Proto :: (V3 :@: CInt) :=> (V3 :@: CInt)
+ex1Proto = ex1Session Id (Prim Plus)

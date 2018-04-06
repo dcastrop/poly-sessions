@@ -1,3 +1,5 @@
+{-# LANGUAGE RankNTypes #-}
+{-# LANGUAGE EmptyCase #-}
 -- Wrapper on top of Language.Poly + C-like expressions
 {-# LANGUAGE ExistentialQuantification #-}
 {-# LANGUAGE FlexibleInstances #-}
@@ -19,11 +21,11 @@ module Language.Poly.C
   , CNum
   , CType
   , CExpr (..)
-  , CCore
   , ECore (..)
-  , getDom
-  , getCod
-  , module X
+  , CCore
+  , UCCore
+  , eraseTy
+  , eraseTy'
   ) where
 
 import Data.Singletons
@@ -31,16 +33,31 @@ import Data.Singletons
   , SingKind(..)
   , SomeSing(..) )
 import Data.Singletons.TypeLits as Sing
+import Data.Singletons.Decide
 
 import Data.Text.Prettyprint.Doc ( Pretty, pretty )
 import Data.Text.Prettyprint.EDoc
 
-import Language.Poly as X
+import Language.Poly
 import Language.Poly.Erasure ( Erasure (..) )
-import Language.Poly.UCore()
+import qualified Language.Poly.UCore as C
 
 -- Primitive functions and operations
 data TyPrim = TInt32 | TFloat32 | TVector Sing.Nat TyPrim
+
+injVect :: 'TVector n1 t1 :~: 'TVector n2 t2 -> (n1 :~: n2, t1 :~: t2)
+injVect Refl = (Refl, Refl)
+
+instance SDecide TyPrim where
+  SInt32 %~ SInt32 = Proved Refl
+  SFloat32 %~ SFloat32 = Proved Refl
+  SVector n1 p1 %~ SVector n2 p2 =
+    case (n1 %~ n2, p1 %~ p2) of
+      (Proved Refl, Proved Refl) -> Proved Refl
+      (Disproved f, _) -> Disproved (\pr -> f $ fst $ injVect pr)
+      (_, Disproved f) -> Disproved (\pr -> f $ snd $ injVect pr)
+  _ %~ _ = Disproved (\pr -> case pr of {}) -- HACK!
+
 data PrimTy = Int32  | Float32  | Vector Integer PrimTy
   deriving (Eq, Show)
 
@@ -122,25 +139,15 @@ instance Erasure TyPrim CExpr UCExpr where
   erase Get   = UGet
   erase Put   = UPut
 
-type CCore = Core CExpr
-
-data ECore where
-    EIdle :: ECore
-    EEval :: forall (t :: Type TyPrim). Sing t -> CCore t -> ECore
+type CCore a = Core CExpr a
+type UCCore = C.Core UCExpr PrimTy
+data ECore = ECore { ty :: CType, expr :: UCCore }
 
 instance Pretty ECore where
-  pretty EIdle = [ppr| "idle" |]
-  pretty (EEval _ c)= [ppr| c |]
+  pretty = pretty . expr
 
-instance Eq ECore where
-  EIdle       == EIdle       = True
-  EEval t1 e1 == EEval t2 e2 = fromSing t1 == fromSing t2 && erase e1 == erase e2
-  _           == _           = False
+eraseTy :: Sing t -> CCore t -> ECore
+eraseTy fty t = ECore { ty = fromSing fty, expr = erase t}
 
-getDom :: forall (a :: Type TyPrim) (b :: Type TyPrim). (SingI a, SingI b)
-    => CCore (a ':-> b) -> CType
-getDom _ = fromSing (sing :: Sing a)
-
-getCod :: forall (a :: Type TyPrim) (b :: Type TyPrim). (SingI a, SingI b)
-    => CCore (a ':-> b) -> CType
-getCod _ = fromSing (sing :: Sing b)
+eraseTy' :: SingI t => CCore t -> ECore
+eraseTy' = eraseTy sing
