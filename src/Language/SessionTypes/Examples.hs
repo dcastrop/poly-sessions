@@ -50,11 +50,11 @@ testProto g = putStrLn $ show $ pretty $ getGen g (Rol 0) (Rol 1)
 testRw :: a :=> b -> IO ()
 testRw g = putStrLn $ show $ pretty $ step $ getGen g (Rol 0) (Rol 1)
 
-testSimpl :: a :=> b -> IO ()
-testSimpl g = putStrLn $ show $ pretty $ simpl $ getGen g (Rol 0) (Rol 1)
-
-testEquiv :: Equiv -> a :=> b -> IO ()
-testEquiv e g = putStrLn $ show $ pretty $ simplStep [e] $ getGen g (Rol 0) (Rol 1)
+-- testSimpl :: a :=> b -> IO ()
+-- testSimpl g = putStrLn $ show $ pretty $ simpl $ getGen g (Rol 0) (Rol 1)
+--
+-- testEquiv :: Rule -> a :=> b -> IO ()
+-- testEquiv e g = putStrLn $ show $ pretty $ simplStep [e] $ getGen g (Rol 0) (Rol 1)
 
 
 -- RING

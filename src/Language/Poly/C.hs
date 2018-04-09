@@ -26,6 +26,7 @@ module Language.Poly.C
   , UCCore
   , eraseTy
   , eraseTy'
+  , isPrim
   ) where
 
 import Data.Singletons
@@ -151,3 +152,26 @@ eraseTy fty t = ECore { ty = fromSing fty, expr = erase t}
 
 eraseTy' :: SingI t => CCore t -> ECore
 eraseTy' = eraseTy sing
+
+isId :: ECore -> Bool
+isId (ECore _ C.Id) = True
+isId _            = False
+
+isProj :: ECore -> Bool
+isProj e = isFst e || isSnd e
+
+isPrim :: ECore -> Bool
+isPrim e = isProj e || maybe False (const True) (isInj e) || isId e
+
+isFst :: ECore -> Bool
+isFst (ECore _ C.Fst) = True
+isFst _             = False
+
+isSnd :: ECore -> Bool
+isSnd (ECore _ C.Snd) = True
+isSnd _            = False
+
+isInj :: ECore -> Maybe Int
+isInj (ECore _ C.Inl) = Just 1
+isInj (ECore _ C.Inr) = Just 2
+isInj _             = Nothing
