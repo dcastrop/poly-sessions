@@ -17,12 +17,11 @@ import Language.SessionTypes.Combinators
 import Language.SessionTypes.RwSession
 
 iter :: Int -> (a -> a -> a) -> a -> a -> a
-iter i comp idf f
-  | i <= 0     = idf
-  | i == 1     = f
-  | otherwise = f `comp` iter (i-1) comp idf f
-
-
+iter i c idf f = go i
+  where
+    go j | j <= 0     = idf
+         | j == 1     = f
+         | otherwise = f `c` go (j-1)
 
 example1 :: CInt :=> CInt
 example1 = lift (Id :: CCore (CInt ':-> CInt))
@@ -50,12 +49,14 @@ testProto g = putStrLn $ show $ pretty $ getGen g (Rol 0) (Rol 1)
 testRw :: a :=> b -> IO ()
 testRw g = putStrLn $ show $ pretty $ step $ getGen g (Rol 0) (Rol 1)
 
+example6 :: 'TProd CInt CInt :=> 'TProd CInt CInt
+example6 = gsplit (lift Id) (lift Id) `gcomp` lift Fst
+
 -- testSimpl :: a :=> b -> IO ()
 -- testSimpl g = putStrLn $ show $ pretty $ simpl $ getGen g (Rol 0) (Rol 1)
 --
 -- testEquiv :: Rule -> a :=> b -> IO ()
 -- testEquiv e g = putStrLn $ show $ pretty $ simplStep [e] $ getGen g (Rol 0) (Rol 1)
-
 
 -- RING
 -- Poly Level
@@ -115,6 +116,7 @@ ex1Session f g =
       (gfmap (sing :: Sing V3)
              (gsplit (lift g) (lift Snd))
        `gcomp` gpermute) `gcomp`
+    -- lift (Fmap (sing :: Sing V3) (Split Id f))
     gfmap (sing :: Sing V3) (gsplit (lift Id) (lift f))
 
 ex1Proto :: (V3 :@: CInt) :=> (V3 :@: CInt)
