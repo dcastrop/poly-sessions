@@ -48,9 +48,23 @@ instance (Pretty a, Pretty b) => Pretty (Either a b) where
   pretty = either pretty pretty
 
 instance Pretty Error where
-  pretty (MultiChoice x1 x2) = pretty ("Substitution leads to ill-formed choice" :: String)
-  pretty (InvalidSubst x1 x2) = pretty ("Invalid substitition of role" :: String)
-  pretty EmptySubstitution = pretty ("Substitution leads to empty role sequence" :: String)
+  pretty (MultiChoice x1 x2) =
+    Pretty.hsep
+    [ pretty ("Substitution of" :: String)
+    , pretty x2
+    , pretty ("to " :: String)
+    , pretty x1
+    , pretty ("leads to ill-formed choice" :: String)
+    ]
+  pretty (InvalidSubst x1 x2) =
+    Pretty.hsep
+    [ pretty ("Invalid substitition of role" :: String)
+    , pretty x1
+    , pretty ("to " :: String)
+    , pretty x2
+    ]
+  pretty EmptySubstitution =
+    pretty ("Substitution leads to empty role sequence" :: String)
   pretty (IllFormed m r rs) = Pretty.vsep
     [ Pretty.hsep [ pretty ("Ill-formed message:" :: String)
                   , pretty m
@@ -183,14 +197,19 @@ data Dir = L | R
 newtype Script m s a = Script { runScript :: s -> m [(a, s)] }
 
 data RwError
-  = NoRewrite | WrongPath Path Proto | NoOuterCtx Proto
-  | InvalidRw Error | Unimplemented
+  = WrongPath Path Proto
+  | NoOuterCtx Proto
+  | InvalidRw Error
 
 instance Pretty RwError where
+  pretty (NoOuterCtx g) =
+    Pretty.hsep
+    [ pretty ("Expression " :: String)
+    , pretty g
+    , pretty ("is already at the outermost level." :: String)]
   pretty (InvalidRw err) = pretty err
   pretty (WrongPath d g) = pretty $ "Wrong path: " ++ (show d)
     ++ " " ++ (show $ pretty g)
-  pretty _ = pretty ("TODO: error-message pretty printing" :: String)
 
 type RwErrorM m = MonadError RwError m
 
@@ -449,9 +468,9 @@ congrRw g = F.asum [g
     go = congrRw g
 
 stepScript :: GScript Equiv
-stepScript = many0 $ tryAll
-               [ Sym HideL
-               , Sym HideR
+stepScript = tryAll
+               [ HideL
+               , HideR ]
                , Hide
                , CompL
                , CompR

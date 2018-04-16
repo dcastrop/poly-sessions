@@ -15,7 +15,7 @@
 module Language.Poly.C
   ( PrimTy (..)
   , TyPrim (..)
-  , C
+  , CT
   , CInt
   , CFloat
   , CNum
@@ -86,11 +86,11 @@ instance SingKind TyPrim where
   toSing (Vector (toSing -> SomeSing i) (toSing -> SomeSing t)) =
       SomeSing $ SVector i t
 
-type family C (a :: TyPrim) :: Type TyPrim where
-  C a = 'TPrim a
+type family CT (a :: TyPrim) :: Type TyPrim where
+  CT a = 'TPrim a
 
-type CInt   = C 'TInt32
-type CFloat = C 'TFloat32
+type CInt   = CT 'TInt32
+type CFloat = CT 'TFloat32
 
 class CNum (a :: TyPrim) where
 instance CNum 'TInt32 where
@@ -100,14 +100,14 @@ type CType = Type PrimTy
 
 data CExpr (t :: Type TyPrim) where
     CInt  :: Int -> CExpr CInt
-    Plus  :: CNum a => CExpr ('TProd (C a) (C a) ':-> C a)
-    Minus :: CNum a => CExpr ('TProd (C a) (C a) ':-> C a)
-    Mult  :: CNum a => CExpr ('TProd (C a) (C a) ':-> C a)
-    Div   :: CNum a => CExpr ('TProd (C a) (C a) ':-> C a)
-    Mod   :: CNum a => CExpr ('TProd (C a) (C a) ':-> C a)
-    Get   :: CExpr ('TProd (C ('TVector i a)) CInt ':-> C a)
-    Put   :: CExpr ('TProd ('TProd CInt (C a)) (C ('TVector i a))
-                   ':-> C ('TVector i a))
+    Plus  :: CNum a => CExpr ('TProd (CT a) (CT a) ':-> CT a)
+    Minus :: CNum a => CExpr ('TProd (CT a) (CT a) ':-> CT a)
+    Mult  :: CNum a => CExpr ('TProd (CT a) (CT a) ':-> CT a)
+    Div   :: CNum a => CExpr ('TProd (CT a) (CT a) ':-> CT a)
+    Mod   :: CNum a => CExpr ('TProd (CT a) (CT a) ':-> CT a)
+    Get   :: CExpr ('TProd (CT ('TVector i a)) CInt ':-> CT a)
+    Put   :: CExpr ('TProd ('TProd CInt (CT a)) (CT ('TVector i a))
+                   ':-> CT ('TVector i a))
 
 data UCExpr t where
     UCInt  :: Int -> UCExpr t
