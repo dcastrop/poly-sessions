@@ -470,7 +470,7 @@ congrRw g = F.asum [g
 stepScript :: GScript Equiv
 stepScript = tryAll
                [ HideL
-               , HideR ]
+               , HideR
                , Hide
                , CompL
                , CompR
