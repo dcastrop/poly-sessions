@@ -14,6 +14,7 @@
 {-# LANGUAGE QuasiQuotes #-}
 module Language.Poly.C
   ( PrimTy (..)
+  , Sing (..)
   , TyPrim (..)
   , CT
   , CInt

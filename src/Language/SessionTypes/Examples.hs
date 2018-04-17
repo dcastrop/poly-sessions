@@ -29,19 +29,19 @@ iter i c idf f = go i
 example1 :: CInt :~: 0 :=> CInt :~: 0
 example1 = gid
 
--- inc :: CCore (CInt ':-> CInt)
--- inc = Prim Plus `Comp` Split Id (Const $ Prim $ CInt 1)
---
--- example2 :: CInt :=> CInt
--- example2 = lift inc `gcomp` example1
---
--- example3 :: CInt :=> 'TProd CInt CInt
--- example3 = gsplit (lift inc) (lift Id)
---
--- type Ex1 = 'PProd 'PId 'PId
---
--- example4 :: 'TProd CInt CInt :=> 'TProd CInt CInt
--- example4 = gfmap (sing :: Sing Ex1) (lift inc)
+inc :: CCore (CInt ':-> CInt)
+inc = Prim Plus `Comp` Split Id (Const $ Prim $ CInt 1)
+
+example2 :: CInt :~: 0 :=> CInt :~: 1
+example2 = lift inc `gcomp` example1
+
+example3 :: CInt :~: 0 :=> CInt :~: 1 :*: CInt :~: 0
+example3 = gsplit (lift inc) gid
+
+type Ex1 = 'PProd 'PId 'PId
+
+example4 :: CInt :~: 1 :*: CInt :~: 1 :=> CInt :~: 1 :*: CInt :~: 1
+example4 = gfmap (sing :: Sing Ex1) (lift inc)
 --
 -- example5 :: 'TProd CInt CInt :=> 'TProd CInt CInt
 -- example5 = gsplit (lift Fst) (lift Snd)
