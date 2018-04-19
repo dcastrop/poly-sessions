@@ -1,3 +1,4 @@
+{-# LANGUAGE EmptyCase #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE TypeFamilyDependencies #-}
 {-# LANGUAGE FlexibleInstances #-}
@@ -17,16 +18,28 @@ where
 import Data.Kind hiding ( Type )
 
 import Data.Singletons
-import Data.Singletons.TypeLits
-import Data.Map ( Map )
-import qualified Data.Map as Map
 import Control.Monad.State.Strict hiding ( lift )
 
 import Language.Poly.C
 import Language.Poly.Core hiding ( Nat, getType )
 import Language.Poly.Type
-import Language.SessionTypes.Common ( Role(..), addAlt, emptyAlt )
+-- import Language.SessionTypes.Common ( Role(..), addAlt, emptyAlt )
 import Language.SessionTypes.Prefix.Global
+
+data Idx = Z | S Idx
+
+data instance Sing (t :: Idx) where
+  SZ :: Sing 'Z
+  SS :: Sing  n -> Sing ('S n)
+
+type SIdx (t :: Idx) = Sing t
+
+type SomeIdx = SomeSing Idx
+
+instance SingI 'Z where
+  sing = SZ
+instance SingI n => SingI ('S n) where
+  sing = SS sing
 
 data SRole :: * -> * where
   SId   :: a -> SRole a
@@ -39,32 +52,52 @@ data SRole :: * -> * where
 -- we introduce 'TagL' and 'TagR'. We treat them as equal:
 -- >>> SumR r1 r2 = TagL r1 = TagR r2.
 data TRole :: * where
-  RId   :: Type TyPrim -> Nat -> TRole
+  RId   :: Type TyPrim -> Idx -> TRole
   RProd :: TRole -> TRole -> TRole
   RSum  :: TRole -> TRole -> TRole
 
 infixl 6 :+:
 infixl 7 :*:
-infixl 9 :~:
 infixl 9 :::
 
-type (:~:) = 'RId
 type (:*:) = 'RProd
-type (:+:) = 'RSum
+type family (:+:) (l :: TRole) (r :: TRole) = (t :: TRole) | t -> l r where
+  'RId a n :+: 'RId b n = 'RId ('TSum a b) n
+  l        :+: r        = 'RSum l r
 
-type family (:::) (r :: SRole Nat) (a :: Type TyPrim) = (s :: TRole) | s -> r a where
+type family (:::) (r :: SRole Idx) (a :: Type TyPrim) = (s :: TRole) | s -> r a where
   'SId n ::: a = 'RId a n
   'SProd r s ::: 'TProd a b = 'RProd (r ::: a) (s ::: b)
   'SSum r s ::: 'TSum a b = 'RSum (r ::: a) (s ::: b)
 
--- | Singletonized role. Due to the use of Integers, I cannot derive these
--- using Data.Singletons.TH automatically
-data instance Sing (t :: TRole) where
-  RI :: Sing t -> Sing n -> Sing ('RId t n)
-  RP :: Sing r1 -> Sing r2 -> Sing ('RProd r1 r2)
-  RS :: Sing r1 -> Sing r2 -> Sing ('RSum r1 r2)
-  TL :: Sing r1 -> Sing ('RSum r1 r2)
-  TR :: Sing r2 -> Sing ('RSum r1 r2)
+-- -- | Singletonized role. Due to the use of Integers, I cannot derive these
+-- -- using Data.Singletons.TH automatically
+-- data instance Sing (t :: TRole) where
+--   SRI :: Atom t -> Sing n -> Sing ('RId t n)
+--   SRP :: Sing r1 -> Sing r2 -> Sing ('RProd r1 r2)
+--   SRS :: Sing r1 -> Sing r2 -> Sing ('RSum r1 r2)
+--   STL :: Sing r1 -> Sing ('RSum r1 r2)
+--   STR :: Sing r2 -> Sing ('RSum r1 r2)
+
+data STRole (a :: Type TyPrim) (t :: TRole) where
+  RI :: SType t -> SIdx n                    -> STRole t            ('RId t n)
+  RP :: STRole a r1 -> STRole b r2           -> STRole ('TProd a b) ('RProd r1 r2)
+  RJ :: SType a -> STRole a r1 -> STRole a r2 -> STRole a            (r1 :+: r2)
+  RS :: STRole a r1 -> STRole b r2           -> STRole ('TSum a b)  (r1 :+: r2)
+  TL :: SType b -> STRole a r1               -> STRole ('TSum a b)  (r1 :+: r2)
+  TR :: SType a -> STRole b r2               -> STRole ('TSum a b)  (r1 :+: r2)
+
+class Monad m => RoleGen m where
+   fresh :: m SomeIdx
+
+type STR = SomeIdx
+
+emptySTR :: STR
+emptySTR = SomeSing SZ
+
+instance RoleGen (State STR) where
+  fresh = get >>= \r@(SomeSing i) ->
+    put (SomeSing $ SS i) >> return r
 
 -- instance SingKind TRole where
 --   type DemoteRep TRole = SRole Integer
@@ -98,16 +131,16 @@ data (:<:) :: TRole -> TRole -> * where
 infixr 1 :==>
 
 data (:==>) :: TRole -> TRole -> * where
-  TComm  :: Sing ri
-         -> Sing ro
-         -> CCore (EraseR ri ':-> EraseR ro)
+  TComm  :: STRole a ri
+         -> STRole b ro
+         -> CCore (a ':-> b)
          -> ri :==> ro
 
   TSplit  :: ri :==> ro1
           -> ri :==> ro2
           -> ri :==> ro1 :*: ro2
 
-  TSeq    :: Sing r
+  TSeq    :: STRole a r
           -> ri :==> r
           -> r  :==> ro
           -> ri :==> ro
@@ -116,7 +149,13 @@ data (:==>) :: TRole -> TRole -> * where
           -> ri2 :==> ro
           -> ri1 :+: ri2 :==> ro
 
-  TSkip   :: Sing ri
+  TBranchL :: ri1 :==> ro
+           -> ri1 :+: ri2 :==> ro
+
+  TBranchR :: ri2 :==> ro
+           -> ri1 :+: ri2 :==> ro
+
+  TSkip   :: STRole a ri
           -> ro :<: ri
           -> ri :==> ro
 
@@ -131,23 +170,160 @@ data (:==>) :: TRole -> TRole -> * where
 --     s = sing :: SNat 1
 --     t = sing :: SNat 2
 
--- class Monad m => RoleGen m where
---    fresh :: SRole Integer -> m Role
+type Proto = GT CType ECore
+
+data DPair b t1 = forall t2. DPair (STRole b t2) (t1 :==> t2)
+type (:=>) a b = forall t1 m. RoleGen m => STRole a t1 -> m (DPair b t1)
+
+gId :: forall a. a :=> a
+gId = \r1 -> pure $ DPair r1 (TSkip r1 LR)
+
+gcomp :: forall a b c. b :=> c -> a :=> b -> a :=> c
+gcomp f g = \r1 -> do
+    DPair r2 p1 <- g r1
+    DPair r3 p2 <- f r2
+    return $ DPair r3 (TSeq r2 p1 p2)
+
+-- Products
+
+-- If we get a pair of roles, we just skip, with the left or right role as
+-- output role.
+-- If we get a single role, we lift the "fst" function
+gfst :: forall a b. 'TProd a b :=> a
+gfst = \r1 -> case r1 of
+               RP p1 _ -> return $ DPair p1 (TSkip r1 (L1 LR))
+               (RI (STProd a _) _) ->
+                 do SomeSing i <- fresh
+                    let r2 = RI a i
+                    return $ DPair r2 (TComm r1 r2 Fst)
+               (RJ (STProd a _) _ _) ->
+                 do SomeSing i <- fresh
+                    let r2 = RI a i
+                    return $ DPair r2 (TComm r1 r2 Fst)
+
+gsnd :: forall a b. 'TProd a b :=> b
+gsnd = \r1 -> case r1 of
+               RP _ p2 -> return $ DPair p2 (TSkip r1 (L2 LR))
+               (RI (STProd _ a) _) ->
+                 do SomeSing i <- fresh
+                    let r2 = RI a i
+                    return $ DPair r2 (TComm r1 r2 Snd)
+               (RJ (STProd _ a) _ _) ->
+                 do SomeSing i <- fresh
+                    let r2 = RI a i
+                    return $ DPair r2 (TComm r1 r2 Snd)
+
+gsplit :: forall a b c. a :=> b -> a :=> c -> a :=> 'TProd b c
+gsplit f g = \r1 -> do
+   DPair o1 p1 <- f r1
+   DPair o2 p2 <- g r1
+   return $ DPair (RP o1 o2) (TSplit p1 p2)
+
+gprod :: forall a b c d. a :=> b -> c :=> d -> 'TProd a c :=> 'TProd b d
+gprod f g = gsplit (f `gcomp` gfst) (g `gcomp` gsnd)
+
+extractTy :: STRole a t -> SType a
+extractTy (RI t _) = t
+extractTy (RJ t _ _) = t
+extractTy (TL t r) = STSum (extractTy r) t
+extractTy (TR t r) = STSum t (extractTy r)
+extractTy (RS l r) = STSum (extractTy l) (extractTy r)
+extractTy (RP l r) = STProd (extractTy l) (extractTy r)
+
+joinRoles :: SType a -> STRole a t1 -> STRole a t2 -> STRole a (t1 :+: t2)
+-- joinRoles t (TL r a) (TR l b) = RS a b
+joinRoles r a        b        = RJ r a b
+
+gcase :: forall a b c. a :=> c -> b :=> c -> 'TSum a b :=> c
+gcase f g = \r1 ->
+     case r1 of
+       RI (STSum a b) n -> do
+         DPair o1 p1 <- f $ RI a n
+         DPair o2 p2 <- g $ RI b n
+         let tc = extractTy o1
+         let o = joinRoles tc o1 o2
+         return $
+           DPair o (TBranch (TSeq o1 p1 $ TComm o1 o Id)
+                            (TSeq o2 p2 $ TComm o2 o Id))
+       -- XXX: whenever we are treating the "join" of two roles, we should
+       -- treat is as a new role identifier. However,
+       RJ t _ _ -> do
+         SomeSing i <- fresh
+         let ri = RI t i
+         DPair o p <- gcase f g ri
+         return $ DPair o $ TSeq ri (TComm r1 ri Id) p
+       TL _ l -> do
+         DPair o p <- f l
+         return $ DPair o (TBranchL p)
+       TR _ l -> do
+         DPair o p <- g l
+         return $ DPair o (TBranchR p)
+       RS l r -> do
+         DPair o1 p1 <- f l
+         DPair o2 p2 <- g r
+         let tc = extractTy o1
+         let o = joinRoles tc o1 o2
+         let b1 = (TSeq o1 p1 $ TComm o1 o Id)
+             b2 = (TSeq o2 p2 $ TComm o2 o Id)
+         return $ DPair o $ TBranch b1 b2
+
+ginl :: forall a b. SingI b => a :=> 'TSum a b
+ginl = \r1 -> return $ DPair (TL sing r1) (TComm r1 (TL (sing :: Sing b) r1) Inl)
+
+ginr :: forall a b. SingI a => b :=> 'TSum a b
+ginr = \r1 -> return $ DPair (TR sing r1) (TComm r1 (TR (sing :: Sing a) r1) Inr)
+
+-- ginlS :: forall e1 e2. Sing e1 -> Sing e2 -> (:==>) e1 ('RSum e1 e2)
+-- ginlS e1 e2 = TComm e1 (RS e1 e2) Inl
 --
--- type STR = (Int, Map (SRole Integer) Int)
+-- ginrS :: forall e1 e2. Sing e1 -> Sing e2 -> (:==>) e2 ('RSum e1 e2)
+-- ginrS e1 e2 = TComm e2 (RS e1 e2) Inr
 --
--- emptySTR :: STR
--- emptySTR = (0, Map.empty)
+-- gsum :: forall r1 r2 r3 r4.
+--        (SingI r3, SingI r4)
+--      => (:==>) r1 r3
+--      -> (:==>) r2 r4
+--      -> (:==>) ('RSum r1 r2) ('RSum r3 r4)
+-- gsum f g = gcase (ginl `gcomp` f) (ginr `gcomp` g)
 --
--- instance RoleGen (State STR) where
---   fresh k = get >>= \(i, m) ->
---     case Map.lookup k m of
---       Just r -> return $ Rol r
---       Nothing -> do
---         put (i+1, Map.insert k i m)
---         return $ Rol i
+-- gsumS :: forall r1 r2 r3 r4.
+--        Sing r3
+--       -> Sing r4
+--       -> (:==>) r1 r3
+--       -> (:==>) r2 r4
+--       -> (:==>) ('RSum r1 r2) ('RSum r3 r4)
+-- gsumS r3 r4 f g = gcase (TSeq r3 f $ ginlS r3 r4)
+--                         (TSeq r4 g $ ginrS r3 r4)
 --
--- type Proto = GT CType ECore
+-- --- XXX: Functor refactor, combine with application in poly-lang
+-- -- (maybe a typeclass?)
+-- type RPoly = Poly TRole
+--
+-- type family (:@@:) (p :: RPoly) (t :: TRole) :: TRole where
+--   'PK c :@@: t = c
+--   'PId :@@: t = t
+--   'PProd p1 p2 :@@: t = 'RProd (p1 :@@: t) (p2 :@@: t)
+--   'PSum p1 p2 :@@: t = 'RSum (p1 :@@: t) (p2 :@@: t)
+--
+-- rapp :: forall (p :: RPoly) (t :: TRole).
+--        Sing p -> Sing t -> Sing (p :@@: t)
+-- rapp SPId           t = t
+-- rapp (SPK c)       _t = c
+-- rapp (SPProd p1 p2) t = RP (p1 `rapp` t) (p2 `rapp` t)
+-- rapp (SPSum p1 p2)  t = RS (p1 `rapp` t) (p2 `rapp` t)
+--
+-- gfmap :: forall r1 r2 f. (SingI r1, SingI r2)
+--       => Sing f
+--       -> (:==>) r1 r2
+--       -> (:==>) (f :@@: r1) (f :@@: r2)
+-- gfmap (SPK r) _ = gidS r
+-- gfmap SPId g = g
+-- gfmap (SPProd p1 p2) f =
+--   gprodS (rapp p1 (sing :: Sing r1)) (rapp p2 (sing :: Sing r1))
+--          (gfmap p1 f) (gfmap p2 f)
+-- gfmap (SPSum p1 p2) f =
+--   gsumS (rapp p1 (sing :: Sing r2)) (rapp p2 (sing :: Sing r2))
+--         (gfmap p1 f) (gfmap p2 f)
 --
 -- flatten :: forall (r :: TRole) m. RoleGen m => Sing r -> m [Role]
 -- flatten (RI _ r) = return [Rol $ fromIntegral $ fromSing r]
@@ -200,118 +376,8 @@ data (:==>) :: TRole -> TRole -> * where
 --      -> (:==>) r1 r2
 -- lift = TComm sing sing
 --
--- -- distrib :: forall r1 r2 a b. (SingI r1, SingI r2)
--- --         => CCore (a ':-> b)
--- --         -> (:==>) (r1 :~: a) (r2 ::: b)
--- -- distrib = TCommS sing sing
---
 -- type GenFn = forall s1 s2 a b r1 r2. (r1 ~ (s1 ::: a), r2 ~ (s2 ::: b))
 --
 -- data (:=>) :: Type TyPrim -> Type TyPrim -> * where
 --   Gen :: (Sing r1 -> Sing r2 -> r1 ::: a :==> r2 ::: b) -> a :=> b
 --
--- gId :: forall a. a :=> a
--- gId = Gen $ \r1 r2 ->
---   case r1 %~ r2 of
---     Proved Refl -> TSkip sing LR
---     _           -> TComm (r1 %%% a) (r2 %%% a)
---
--- gid :: forall r. SingI r => r :==> r
--- gid = TSkip sing LR
---
--- gidS :: forall r. Sing r -> r :==> r
--- gidS r = TSkip r LR
---
--- gcomp :: forall r1 r2 r3. SingI r2 => r2 :==> r3 -> r1 :==> r2 -> r1 :==> r3
--- gcomp = flip $ TSeq sing
---
--- --- Products
--- gfstS :: forall r1 r2. Sing r1 -> Sing r2 -> r1 :*: r2 :==> r1
--- gfstS a b = TSkip (RP a b) (L1 LR)
---
--- gfst :: forall r1 r2. (SingI r1, SingI r2) => r1 :*: r2 :==> r1
--- gfst = gfstS sing sing
---
--- gsndS :: forall r1 r2. Sing r1 -> Sing r2 -> r1 :*: r2 :==> r2
--- gsndS a b = TSkip (RP a b) (L2 LR)
---
--- gsnd :: forall r1 r2. (SingI r1, SingI r2) => r1 :*: r2 :==> r2
--- gsnd = gsndS sing sing
---
--- gsplit :: forall r1 r2 r3. (:==>) r1 r2 -> (:==>) r1 r3
---        -> (:==>) r1 ('RProd r2 r3)
--- gsplit = TSplit
---
--- gprod :: forall r1 r2 r3 r4. (SingI r1, SingI r2)
---       => (:==>) r1 r3 -> (:==>) r2 r4
---       -> (:==>) ('RProd r1 r2) ('RProd r3 r4)
--- gprod = gprodS sing sing
---
--- gprodS :: forall r1 r2 r3 r4. Sing r1 -> Sing r2
---       -> (:==>) r1 r3 -> (:==>) r2 r4
---       -> (:==>) ('RProd r1 r2) ('RProd r3 r4)
--- gprodS r1 r2 f g = gsplit (TSeq r1 (gfstS r1 r2) f)
---                           (TSeq r2 (gsndS r1 r2) g)
---
--- gcase :: forall r1 r2 r3. (:==>) r1 r3 -> (:==>) r2 r3
---       -> (:==>) ('RSum r1 r2) r3
--- gcase = TBranch
---
--- -- Sums
--- ginl :: forall e1 e2. (SingI e1, SingI e2) => (:==>) e1 ('RSum e1 e2)
--- ginl = lift Inl
---
--- ginlS :: forall e1 e2. Sing e1 -> Sing e2 -> (:==>) e1 ('RSum e1 e2)
--- ginlS e1 e2 = TComm e1 (RS e1 e2) Inl
---
--- ginr :: forall e1 e2. (SingI e1, SingI e2) => (:==>) e2 ('RSum e1 e2)
--- ginr = lift Inr
---
--- ginrS :: forall e1 e2. Sing e1 -> Sing e2 -> (:==>) e2 ('RSum e1 e2)
--- ginrS e1 e2 = TComm e2 (RS e1 e2) Inr
---
--- gsum :: forall r1 r2 r3 r4.
---        (SingI r3, SingI r4)
---      => (:==>) r1 r3
---      -> (:==>) r2 r4
---      -> (:==>) ('RSum r1 r2) ('RSum r3 r4)
--- gsum f g = gcase (ginl `gcomp` f) (ginr `gcomp` g)
---
--- gsumS :: forall r1 r2 r3 r4.
---        Sing r3
---       -> Sing r4
---       -> (:==>) r1 r3
---       -> (:==>) r2 r4
---       -> (:==>) ('RSum r1 r2) ('RSum r3 r4)
--- gsumS r3 r4 f g = gcase (TSeq r3 f $ ginlS r3 r4)
---                         (TSeq r4 g $ ginrS r3 r4)
---
--- --- XXX: Functor refactor, combine with application in poly-lang
--- -- (maybe a typeclass?)
--- type RPoly = Poly TRole
---
--- type family (:@@:) (p :: RPoly) (t :: TRole) :: TRole where
---   'PK c :@@: t = c
---   'PId :@@: t = t
---   'PProd p1 p2 :@@: t = 'RProd (p1 :@@: t) (p2 :@@: t)
---   'PSum p1 p2 :@@: t = 'RSum (p1 :@@: t) (p2 :@@: t)
---
--- rapp :: forall (p :: RPoly) (t :: TRole).
---        Sing p -> Sing t -> Sing (p :@@: t)
--- rapp SPId           t = t
--- rapp (SPK c)       _t = c
--- rapp (SPProd p1 p2) t = RP (p1 `rapp` t) (p2 `rapp` t)
--- rapp (SPSum p1 p2)  t = RS (p1 `rapp` t) (p2 `rapp` t)
---
--- gfmap :: forall r1 r2 f. (SingI r1, SingI r2)
---       => Sing f
---       -> (:==>) r1 r2
---       -> (:==>) (f :@@: r1) (f :@@: r2)
--- gfmap (SPK r) _ = gidS r
--- gfmap SPId g = g
--- gfmap (SPProd p1 p2) f =
---   gprodS (rapp p1 (sing :: Sing r1)) (rapp p2 (sing :: Sing r1))
---          (gfmap p1 f) (gfmap p2 f)
--- gfmap (SPSum p1 p2) f =
---   gsumS (rapp p1 (sing :: Sing r2)) (rapp p2 (sing :: Sing r2))
---         (gfmap p1 f) (gfmap p2 f)

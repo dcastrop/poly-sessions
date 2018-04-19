@@ -15,6 +15,7 @@
 module Language.Poly.C
   ( PrimTy (..)
   , Sing (..)
+  , SPrim
   , TyPrim (..)
   , CT
   , CInt
@@ -70,6 +71,8 @@ data instance Sing (t :: TyPrim) where
     SInt32 :: Sing 'TInt32
     SFloat32 :: Sing 'TFloat32
     SVector :: Sing i -> Sing t -> Sing ('TVector i t)
+
+type SPrim (t :: TyPrim) = Sing t
 instance SingI 'TInt32 where
   sing = SInt32
 instance SingI 'TFloat32 where
