@@ -16,10 +16,12 @@
 module Language.SessionTypes.TSession.Syntax
 where
 
+import Prelude hiding ( (.), id )
+
 import Data.Kind hiding ( Type )
 
 import Data.Singletons
-import Prelude hiding ( (.) )
+import Data.Singletons.Decide
 import Control.Category
 import Control.Monad.State.Strict hiding ( lift )
 
@@ -34,6 +36,17 @@ data Idx = Z | S Idx
 data instance Sing (t :: Idx) where
   SZ :: Sing 'Z
   SS :: Sing  n -> Sing ('S n)
+
+ssInj :: 'S i :~: 'S j -> i :~: j
+ssInj Refl = Refl
+
+instance SDecide Idx where
+  SZ %~ SZ = Proved Refl
+  SZ %~ SS _ = Disproved (\x -> case x of {} )
+  SS _ %~ SZ = Disproved (\x -> case x of {} )
+  SS i %~ SS j = case i %~ j of
+                   Proved Refl -> Proved Refl
+                   Disproved f -> Disproved (\x -> f (ssInj x))
 
 type SIdx (t :: Idx) = Sing t
 
@@ -53,7 +66,6 @@ instance SingKind Idx where
   toSing Z = SomeSing SZ
   toSing (S n) = withSomeSing n (SomeSing . SS)
 
-
 data SRole :: * -> * where
   SId   :: a -> SRole a
   SProd :: SRole a -> SRole a -> SRole a
@@ -68,36 +80,69 @@ data TRole :: * where
   RId   :: Type TyPrim -> Idx -> TRole
   RProd :: TRole -> TRole -> TRole
   RSum  :: TRole -> TRole -> TRole
+  RAny  :: TRole
+
+type family Unify (t1 :: TRole) (t2 :: TRole) :: TRole where
+  Unify 'RAny r = r
+  Unify r 'RAny = r
+  Unify ('RId r i) ('RId r i) = 'RId r i
+  Unify ('RProd r1 r2) ('RProd r3 r4) = 'RProd (Unify r1 r3) (Unify r2 r4)
+  Unify ('RSum  r1 r2) ('RSum  r3 r4) = 'RSum (Unify r1 r3) (Unify r2 r4)
 
 infixl 6 :+:
 infixl 7 :*:
-infixl 9 :::
 
 type (:*:) = 'RProd
 type (:+:) = 'RSum
 
-type family (:::) (r :: SRole Idx) (a :: Type TyPrim) = (s :: TRole) | s -> r a where
-  'SId n ::: a = 'RId a n
-  'SProd r s ::: 'TProd a b = 'RProd (r ::: a) (s ::: b)
-  'SSum r s ::: 'TSum a b = 'RSum (r ::: a) (s ::: b)
-
--- -- | Singletonized role. Due to the use of Integers, I cannot derive these
--- -- using Data.Singletons.TH automatically
--- data instance Sing (t :: TRole) where
---   SRI :: Atom t -> Sing n -> Sing ('RId t n)
---   SRP :: Sing r1 -> Sing r2 -> Sing ('RProd r1 r2)
---   SRS :: Sing r1 -> Sing r2 -> Sing ('RSum r1 r2)
---   STL :: Sing r1 -> Sing ('RSum r1 r2)
---   STR :: Sing r2 -> Sing ('RSum r1 r2)
-
 data STRole (a :: Type TyPrim) (t :: TRole) where
-  RI :: SType t -> SIdx n                    -> STRole t            ('RId t n)
+  RI :: SType t -> SIdx n          -> STRole t            ('RId t n)
+  RP :: STRole a r1 -> STRole b r2 -> STRole ('TProd a b) ('RProd r1 r2)
+  RS :: STRole a r1 -> STRole b r2 -> STRole ('TSum a b)  ('RSum r1 r2)
+  TL :: SType b -> STRole a r1     -> STRole ('TSum a b)  ('RSum r1 'RAny)
+  TR :: SType a -> STRole b r2     -> STRole ('TSum a b)  ('RSum 'RAny r2)
 
-  RP :: STRole a r1 -> STRole b r2           -> STRole ('TProd a b) ('RProd r1 r2)
-
-  RS :: STRole a r1 -> STRole b r2           -> STRole ('TSum a b)  (r1 :+: r2)
-  TL :: SType b -> STRole a r1               -> STRole ('TSum a b)  (r1 :+: r2)
-  TR :: SType a -> STRole b r2               -> STRole ('TSum a b)  (r1 :+: r2)
+unify :: STRole a t1 -> STRole a t2 -> Maybe (STRole a (Unify t1 t2))
+unify (RI t1 n1) (RI t2 n2) =
+    case (t1 %~ t2, n1 %~ n2) of
+      (Proved Refl, Proved Refl) -> Just (RI t1 n1)
+      _                          -> Nothing
+unify (RP p1 p2) (RP p3 p4) =
+    case (unify p1 p3, unify p2 p4) of
+      (Just p13, Just p24) -> Just (RP p13 p24)
+      _                    -> Nothing
+unify (RS p1 p2) (RS p3 p4) =
+    case (unify p1 p3, unify p2 p4) of
+      (Just p13, Just p24) -> Just (RS p13 p24)
+      _                    -> Nothing
+unify (RS p1 p2) (TL _ p3) =
+    case (unify p1 p3) of
+      Just p13 -> Just (RS p13 p2)
+      _        -> Nothing
+unify (RS p1 p2) (TR _ p4) =
+    case (unify p2 p4) of
+      Just p24 -> Just (RS p1 p24)
+      _        -> Nothing
+unify (TL _ p3) (RS p1 p2) =
+    case (unify p3 p1) of
+      Just p13 -> Just (RS p13 p2)
+      _        -> Nothing
+unify (TR _ p4) (RS p1 p2) =
+    case (unify p4 p2) of
+      Just p24 -> Just (RS p1 p24)
+      _        -> Nothing
+unify (TL a p1) (TL _ p2) =
+    case (unify p1 p2) of
+      Just p3 -> Just (TL a p3)
+      _        -> Nothing
+unify (TR a p1) (TR _ p2) =
+    case (unify p1 p2) of
+      Just p3 -> Just (TR a p3)
+      _        -> Nothing
+unify (TL _ p1) (TR _ p2) = Just (RS p1 p2)
+unify (TR _ p1) (TL _ p2) = Just (RS p2 p1)
+unify (RI _ _) _ = Nothing
+unify _ (RI _ _) = Nothing
 
 class Monad m => RoleGen m where
    fresh :: m Idx
@@ -110,23 +155,6 @@ emptySTR = Z
 instance RoleGen (State STR) where
   fresh = get >>= \r -> put (S r) >> return r
 
--- instance SingKind TRole where
---   type DemoteRep TRole = SRole Integer
---
---   fromSing (RI _ n) = SId (fromSing n)
---   fromSing (RP a b) = SProd (fromSing a)  (fromSing b)
---   fromSing (RS a b) = SSum (fromSing a)  (fromSing b)
---   fromSing (RL a)   = SSum (fromSing a)  (fromSing b)
---
---   toSing _ = error "Cannot convert TRole to singleton type"
---
--- instance (SingI t, SingI n) => SingI ('RId t n) where
---   sing = RI sing sing
--- instance (SingI a, SingI b) => SingI ('RProd a b) where
---   sing = RP sing sing
--- instance (SingI a, SingI b) => SingI ('RSum a b) where
---   sing = RS sing sing
---
 type family EraseR (r :: TRole) :: Type TyPrim where
   EraseR ('RId t _) = t
   EraseR ('RProd a b) = 'TProd (EraseR a) (EraseR b)
@@ -158,9 +186,13 @@ data (:==>) :: TRole -> TRole -> * where
           -> r  :==> ro
           -> ri :==> ro
 
-  TBranch :: ri1 :==> ro
-          -> ri2 :==> ro
-          -> ri1 :+: ri2 :==> ro
+  TBranchI :: 'RId a n :==> ro1
+           -> 'RId b n :==> ro2
+           -> 'RId ('TSum a b) n :==> Unify ro1 ro2
+
+  TBranchJ :: ri1 :==> ro1
+           -> ri2 :==> ro2
+           -> ri1 :+: ri2 :==> Unify ro1 ro2
 
   TBranchL :: ri1 :==> ro
            -> ri1 :+: ri2 :==> ro
@@ -246,132 +278,59 @@ gInl = Gen $ \r1 -> return $ DPair (TL (sing :: SType b) r1) (TSkip r1 (S1 LR))
 gInr :: forall a b. SingI a => b :=> 'TSum a b
 gInr = Gen $ \r1 -> return $ DPair (TR (sing :: SType a) r1) (TSkip r1 (S2 LR))
 
--- gCase :: forall a b c. a :=> c -> b :=> c -> 'TSum a b :=> c
--- gCase f g = Gen $ \r1 ->
---     case r1 of
---       RS l r -> do
--- --         DPair o1 p1 <- f l
--- --         DPair o2 p2 <- g r
---         return undefined
--- extractTy :: STRole a t -> SType a
--- extractTy (RI t _) = t
--- extractTy (RJ t _ _) = t
--- extractTy (TL t r) = STSum (extractTy r) t
--- extractTy (TR t r) = STSum t (extractTy r)
--- extractTy (RS l r) = STSum (extractTy l) (extractTy r)
--- extractTy (RP l r) = STProd (extractTy l) (extractTy r)
---
--- gcase :: forall a b c. a :=> c -> b :=> c -> 'TSum a b :=> c
--- gcase f g = \r1 ->
---      case r1 of
---        RI (STSum a b) n -> do
---          DPair o1 p1 <- f $ RI a n
---          DPair o2 p2 <- g $ RI b n
---          let tc = extractTy o1
---          let o = RJ tc o1 o2
---          return $
---            DPair o (TBranch (TSeq o1 p1 $ TComm o1 o Id)
---                             (TSeq o2 p2 $ TComm o2 o Id))
---        RJ t _ _ -> do
---          SomeSing i <- fresh
---          let ri = RI t i
---          DPair o p <- gcase f g ri
---          return $ DPair o $ TSeq ri (TComm r1 ri Id) p
---        TL _ l -> do
---          DPair o p <- f l
---          return $ DPair o (TBranchL p)
---        TR _ l -> do
---          DPair o p <- g l
---          return $ DPair o (TBranchR p)
---        RS l r -> do
---          DPair o1 p1 <- f l
---          DPair o2 p2 <- g r
---          let tc = extractTy o1
---          let o = RJ tc o1 o2
---          let b1 = (TSeq o1 p1 $ TComm o1 o Id)
---              b2 = (TSeq o2 p2 $ TComm o2 o Id)
---          return $ DPair o $ TBranch b1 b2
---
--- ginl :: forall a b. SingI b => a :=> 'TSum a b
--- ginl = \r1 -> return $ DPair (TL sing r1) (TComm r1 (TL (sing :: Sing b) r1) Inl)
---
--- ginr :: forall a b. SingI a => b :=> 'TSum a b
--- ginr = \r1 -> return $ DPair (TR sing r1) (TComm r1 (TR (sing :: Sing a) r1) Inr)
---
--- ginlS :: forall a b. Sing b -> a :=> 'TSum a b
--- ginlS t = \r1 -> return $ DPair (TL t r1) (TComm r1 (TL t r1) Inl)
---
--- ginrS :: forall a b. Sing a -> b :=> 'TSum a b
--- ginrS t = \r1 -> return $ DPair (TR t r1) (TComm r1 (TR t r1) Inr)
+getType :: STRole a t -> SType a
+getType (RI t _) = t
+getType (TL t r) = STSum (getType r) t
+getType (TR t r) = STSum t (getType r)
+getType (RS l r) = STSum (getType l) (getType r)
+getType (RP l r) = STProd (getType l) (getType r)
 
--- ginlS :: forall e1 e2. Sing e1 -> Sing e2 -> (:==>) e1 ('RSum e1 e2)
--- ginlS e1 e2 = TComm e1 (RS e1 e2) Inl
---
--- ginrS :: forall e1 e2. Sing e1 -> Sing e2 -> (:==>) e2 ('RSum e1 e2)
--- ginrS e1 e2 = TComm e2 (RS e1 e2) Inr
---
--- gsum :: forall r1 r2 r3 r4.
---        (SingI r3, SingI r4)
---      => (:==>) r1 r3
---      -> (:==>) r2 r4
---      -> (:==>) ('RSum r1 r2) ('RSum r3 r4)
--- gsum f g = gcase (ginl `gcomp` f) (ginr `gcomp` g)
---
--- gsumS :: forall r1 r2 r3 r4.
---        Sing r3
---       -> Sing r4
---       -> (:==>) r1 r3
---       -> (:==>) r2 r4
---       -> (:==>) ('RSum r1 r2) ('RSum r3 r4)
--- gsumS r3 r4 f g = gcase (TSeq r3 f $ ginlS r3 r4)
---                         (TSeq r4 g $ ginrS r3 r4)
---
--- --- XXX: Functor refactor, combine with application in poly-lang
--- -- (maybe a typeclass?)
--- type RPoly = Poly TRole
---
--- type family (:@@:) (p :: RPoly) (t :: TRole) :: TRole where
---   'PK c :@@: t = c
---   'PId :@@: t = t
---   'PProd p1 p2 :@@: t = 'RProd (p1 :@@: t) (p2 :@@: t)
---   'PSum p1 p2 :@@: t = 'RSum (p1 :@@: t) (p2 :@@: t)
---
--- rapp :: forall (p :: RPoly) (t :: TRole).
---        Sing p -> Sing t -> Sing (p :@@: t)
--- rapp SPId           t = t
--- rapp (SPK c)       _t = c
--- rapp (SPProd p1 p2) t = RP (p1 `rapp` t) (p2 `rapp` t)
--- rapp (SPSum p1 p2)  t = RS (p1 `rapp` t) (p2 `rapp` t)
---
--- gfmap :: forall r1 r2 f. (SingI r1, SingI r2)
---       => Sing f
---       -> (:==>) r1 r2
---       -> (:==>) (f :@@: r1) (f :@@: r2)
--- gfmap (SPK r) _ = gidS r
--- gfmap SPId g = g
--- gfmap (SPProd p1 p2) f =
---   gprodS (rapp p1 (sing :: Sing r1)) (rapp p2 (sing :: Sing r1))
---          (gfmap p1 f) (gfmap p2 f)
--- gfmap (SPSum p1 p2) f =
---   gsumS (rapp p1 (sing :: Sing r2)) (rapp p2 (sing :: Sing r2))
---         (gfmap p1 f) (gfmap p2 f)
---
--- flatten :: forall (r :: TRole) m. RoleGen m => Sing r -> m [Role]
--- flatten (RI _ r) = return [Rol $ fromIntegral $ fromSing r]
--- flatten (RP r1 r2) = (++) <$> flatten r1 <*> flatten r2
--- flatten t@RS{} = (:[]) <$> fresh (fromSing t)
---
--- getType :: forall (r :: TRole). Sing r -> Sing (EraseR r)
--- getType (RI t _) = t
--- getType (RP r1 r2) = STProd (getType r1) (getType r2)
--- getType (RS r1 r2) = STSum (getType r1) (getType r2)
---
--- inR :: r1 :==> r2 -> Sing r1
--- inR (TComm ri _ _) = ri
--- inR (TSplit x1 _ ) = inR x1
--- inR (TSeq _ r _) = inR r
--- inR (TBranch x1 x2) = RS (inR x1) (inR x2)
--- inR (TSkip r _) = r
+gCase :: forall a b c. a :=> c -> b :=> c -> 'TSum a b :=> c
+gCase f g = Gen $ \r1 ->
+    case r1 of
+      RS l r -> do
+          DPair o1 p1 <- getGen f l
+          DPair o2 p2 <- getGen g r
+          case unify o1 o2 of
+            Just o -> return $ DPair o $ TBranchJ p1 p2
+            Nothing -> do
+              SomeSing i <- toSing <$> fresh
+              let o = RI (getType o1) i
+              return $ DPair o (TBranchJ (TSeq o1 p1 (TComm o1 o Id))
+                                         (TSeq o2 p2 (TComm o2 o Id)))
+      TL _ l -> do
+          DPair o1 p1 <- getGen f l
+          return $ DPair o1 (TBranchL p1)
+
+      TR _ l -> do
+          DPair o1 p1 <- getGen g l
+          return $ DPair o1 (TBranchR p1)
+
+      RI (STSum a b) n -> do
+          DPair o1 p1 <- getGen f (RI a n)
+          DPair o2 p2 <- getGen g (RI b n)
+          case unify o1 o2 of
+            Just o -> return $ DPair o $ TBranchI p1 p2
+            Nothing -> do
+              SomeSing i <- toSing <$> fresh
+              let o = RI (getType o1) i
+              return $ DPair o (TBranchI (TSeq o1 p1 (TComm o1 o Id))
+                                         (TSeq o2 p2 (TComm o2 o Id)))
+
+gsum :: forall a b c d. (SingI c, SingI d)
+     => a :=> c -> b :=> d -> 'TSum a b :=> 'TSum c d
+gsum f g = gCase (gInl . f) (gInr . g)
+
+gfmap :: forall r1 r2 f. (SingI r1, SingI r2)
+      => Sing f
+      -> (:=>) r1 r2
+      -> (:=>) (f :@: r1) (f :@: r2)
+gfmap (SPK _) _ = id
+gfmap SPId g = g
+gfmap (SPProd p1 p2) f = gprod (gfmap p1 f) (gfmap p2 f)
+gfmap (SPSum p1 p2) f
+  = case (appD p1 (sing :: Sing r2), appD p2 (sing :: Sing r2)) of
+        (SingInstance, SingInstance) -> gsum (gfmap p1 f) (gfmap p2 f)
 --
 -- generate :: r1 :==> r2 -> Proto
 -- generate g = evalState (gen g) emptySTR
@@ -406,9 +365,3 @@ gInr = Gen $ \r1 -> return $ DPair (TR (sing :: SType a) r1) (TSkip r1 (S2 LR))
 --      => CCore (EraseR r1 ':-> EraseR r2)
 --      -> (:==>) r1 r2
 -- lift = TComm sing sing
---
--- type GenFn = forall s1 s2 a b r1 r2. (r1 ~ (s1 ::: a), r2 ~ (s2 ::: b))
---
--- data (:=>) :: Type TyPrim -> Type TyPrim -> * where
---   Gen :: (Sing r1 -> Sing r2 -> r1 ::: a :==> r2 ::: b) -> a :=> b
---
