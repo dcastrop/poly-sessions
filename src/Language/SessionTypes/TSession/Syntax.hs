@@ -22,16 +22,25 @@ import Data.Kind hiding ( Type )
 
 import Data.Singletons
 import Data.Singletons.Decide
+import Data.Map ( Map )
+import qualified Data.Map as Map
 import Control.Category
 import Control.Monad.State.Strict hiding ( lift )
 
 import Language.Poly.C
 import Language.Poly.Core hiding ( Nat, getType )
 import Language.Poly.Type
--- import Language.SessionTypes.Common ( Role(..), addAlt, emptyAlt )
+import Language.SessionTypes.Common ( Role(..), addAlt, emptyAlt )
 import Language.SessionTypes.Prefix.Global
 
 data Idx = Z | S Idx
+  deriving (Eq, Ord)
+
+idxToInt :: Idx -> Int
+idxToInt = go 0
+  where
+    go m Z = m
+    go m (S n) = go (1+m) n
 
 data instance Sing (t :: Idx) where
   SZ :: Sing 'Z
@@ -66,26 +75,27 @@ instance SingKind Idx where
   toSing Z = SomeSing SZ
   toSing (S n) = withSomeSing n (SomeSing . SS)
 
-data SRole :: * -> * where
-  SId   :: a -> SRole a
-  SProd :: SRole a -> SRole a -> SRole a
-  SSum  :: SRole a -> SRole a -> SRole a
-  deriving (Eq, Ord)
+data SRole
+  = SId (Type TyPrim) Idx
+  | SProd SRole SRole
+  | SSum SRole SRole
+  | SAny
 
 -- | Type of roles: either a sum of roles, product of roles, or a constant
 -- sometimes we do not know the other role in the sum of roles. For those cases,
 -- we introduce 'TagL' and 'TagR'. We treat them as equal:
 -- >>> SumR r1 r2 = TagL r1 = TagR r2.
-data TRole :: * where
-  RId   :: Type TyPrim -> Idx -> TRole
-  RProd :: TRole -> TRole -> TRole
-  RSum  :: TRole -> TRole -> TRole
-  RAny  :: TRole
+data TRole
+  = RId   Idx
+  | RProd TRole TRole
+  | RSum  TRole TRole
+  | RAny
+  deriving (Eq, Ord)
 
 type family Unify (t1 :: TRole) (t2 :: TRole) :: TRole where
   Unify 'RAny r = r
   Unify r 'RAny = r
-  Unify ('RId r i) ('RId r i) = 'RId r i
+  Unify ('RId i) ('RId i) = 'RId i
   Unify ('RProd r1 r2) ('RProd r3 r4) = 'RProd (Unify r1 r3) (Unify r2 r4)
   Unify ('RSum  r1 r2) ('RSum  r3 r4) = 'RSum (Unify r1 r3) (Unify r2 r4)
 
@@ -96,11 +106,18 @@ type (:*:) = 'RProd
 type (:+:) = 'RSum
 
 data STRole (a :: Type TyPrim) (t :: TRole) where
-  RI :: SType t -> SIdx n          -> STRole t            ('RId t n)
+  RI :: SType t -> SIdx n          -> STRole t            ('RId n)
   RP :: STRole a r1 -> STRole b r2 -> STRole ('TProd a b) ('RProd r1 r2)
   RS :: STRole a r1 -> STRole b r2 -> STRole ('TSum a b)  ('RSum r1 r2)
   TL :: SType b -> STRole a r1     -> STRole ('TSum a b)  ('RSum r1 'RAny)
   TR :: SType a -> STRole b r2     -> STRole ('TSum a b)  ('RSum 'RAny r2)
+
+toSRole :: STRole a t -> TRole
+toSRole (RI _ i) = RId $ fromSing i
+toSRole (RP a b) = RProd (toSRole a) (toSRole b)
+toSRole (RS a b) = RSum  (toSRole a) (toSRole b)
+toSRole (TL _ b) = RSum  (toSRole b) RAny
+toSRole (TR _ b) = RSum  RAny (toSRole b)
 
 unify :: STRole a t1 -> STRole a t2 -> Maybe (STRole a (Unify t1 t2))
 unify (RI t1 n1) (RI t2 n2) =
@@ -146,19 +163,16 @@ unify _ (RI _ _) = Nothing
 
 class Monad m => RoleGen m where
    fresh :: m Idx
+   subst :: TRole -> m Role
 
-type STR = Idx
-
-emptySTR :: STR
-emptySTR = Z
+type STR = (Idx, Map TRole Role)
 
 instance RoleGen (State STR) where
-  fresh = get >>= \r -> put (S r) >> return r
-
-type family EraseR (r :: TRole) :: Type TyPrim where
-  EraseR ('RId t _) = t
-  EraseR ('RProd a b) = 'TProd (EraseR a) (EraseR b)
-  EraseR ('RSum a b) = 'TSum (EraseR a) (EraseR b)
+  fresh = get >>= \(r, m) -> put (S r, m) >> return r
+  subst s = get >>= \(r, m) ->
+      let rol = Rol $ idxToInt r
+          newm = Map.insert s rol m
+      in maybe (put (S r, newm) *> return rol) return (Map.lookup s m)
 
 infix 9 :<:
 
@@ -186,9 +200,9 @@ data (:==>) :: TRole -> TRole -> * where
           -> r  :==> ro
           -> ri :==> ro
 
-  TBranchI :: 'RId a n :==> ro1
-           -> 'RId b n :==> ro2
-           -> 'RId ('TSum a b) n :==> Unify ro1 ro2
+  TBranchI :: 'RId n :==> ro1
+           -> 'RId n :==> ro2
+           -> 'RId n :==> Unify ro1 ro2
 
   TBranchJ :: ri1 :==> ro1
            -> ri2 :==> ro2
@@ -331,11 +345,28 @@ gfmap (SPProd p1 p2) f = gprod (gfmap p1 f) (gfmap p2 f)
 gfmap (SPSum p1 p2) f
   = case (appD p1 (sing :: Sing r2), appD p2 (sing :: Sing r2)) of
         (SingInstance, SingInstance) -> gsum (gfmap p1 f) (gfmap p2 f)
---
--- generate :: r1 :==> r2 -> Proto
--- generate g = evalState (gen g) emptySTR
---
--- gen :: RoleGen m => r1 :==> r2 -> m Proto
+
+generate :: forall a b. SingI a => a :=> b -> Proto
+generate g
+  = case op of
+      DPair _ p -> evalState (gen p) ((S f, m)::STR)
+  where
+    (op, (f, m)) = runState pgen ((S Z, Map.empty)::STR)
+    pgen    = getGen g (RI (sing :: Sing a) (sing :: Sing 'Z))
+
+flatten :: RoleGen m => TRole -> m [Role]
+flatten = undefined
+
+gen :: RoleGen m => r1 :==> r2 -> m Proto
+gen (TComm ri ro f) = fmap Comm $
+  Msg <$> flatten (toSRole ri)
+      <*> flatten (toSRole ro)
+      <*> pure (fromSing t1)
+      <*> pure (eraseTy (STArr t1 t2) f)
+  where
+    t1 = getType ri
+    t2 = getType ro
+gen _ = undefined
 -- gen (TComm ri ro f) = fmap Comm $
 --   Msg <$> flatten ri
 --       <*> flatten ro
