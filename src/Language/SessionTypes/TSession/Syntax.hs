@@ -22,6 +22,9 @@ import Data.Kind hiding ( Type )
 
 import Data.Singletons
 import Data.Singletons.Decide
+import Data.List
+  ( foldl'
+  , nub )
 import Data.Map ( Map )
 import qualified Data.Map as Map
 import Control.Category
@@ -163,16 +166,19 @@ unify _ (RI _ _) = Nothing
 
 class Monad m => RoleGen m where
    fresh :: m Idx
-   subst :: TRole -> m Role
+   joinR :: TRole -> TRole -> m Role
 
-type STR = (Idx, Map TRole Role)
+type STR = (Idx, Map (TRole, TRole) Role)
 
 instance RoleGen (State STR) where
   fresh = get >>= \(r, m) -> put (S r, m) >> return r
-  subst s = get >>= \(r, m) ->
+  joinR a b = get >>= \(r, m) ->
       let rol = Rol $ idxToInt r
-          newm = Map.insert s rol m
-      in maybe (put (S r, newm) *> return rol) return (Map.lookup s m)
+          newm = foldl' (\nm s -> Map.insert s rol nm) m $ combinations a b
+      in maybe (put (S r, newm) *> return rol) return (Map.lookup (a,b) m)
+    where
+      combinations r1 r2
+        = nub $ filter (/= (RAny,RAny)) [(r1,r2), (r1,RAny), (RAny, r2)]
 
 infix 9 :<:
 
@@ -217,6 +223,31 @@ data (:==>) :: TRole -> TRole -> * where
   TSkip   :: STRole a ri
           -> ro :<: ri
           -> ri :==> ro
+
+inR :: r1 :==> r2 -> TRole
+inR (TComm r1 _ _) = toSRole r1
+inR (TSplit r1 _) = inR r1
+inR (TSeq _ r1 _) = inR r1
+inR (TBranchI r1 _) = inR r1
+inR (TBranchJ r1 r2) = RSum (inR r1) (inR r2)
+inR (TBranchL r1) = RSum (inR r1) RAny
+inR (TBranchR r1) = RSum RAny (inR r1)
+inR (TSkip r _) = toSRole r
+
+inTy :: r1 :==> r2 -> SomeSing (Type TyPrim)
+inTy (TComm r1 _ _) = SomeSing $ getType r1
+inTy (TSkip r _) = SomeSing $ getType r
+inTy (TSplit r1 _) = inTy r1
+inTy (TSeq _ r1 _) = inTy r1
+inTy (TBranchI r1 r2)
+  = case (inTy r1, inTy r2) of
+      (SomeSing tr1, SomeSing tr2) -> SomeSing $ STSum tr1 tr2
+inTy (TBranchJ r1 r2)
+  = case (inTy r1, inTy r2) of
+      (SomeSing tr1, SomeSing tr2) -> SomeSing $ STSum tr1 tr2
+inTy (TBranchL r1) = inTy r1
+inTy (TBranchR r1) = inTy r1
+
 
 -- test = TSeq (RS (RI a r) (RI b s))
 --             (TComm (RI a t) (TL (RI a r)) Inl)
@@ -347,15 +378,21 @@ gfmap (SPSum p1 p2) f
         (SingInstance, SingInstance) -> gsum (gfmap p1 f) (gfmap p2 f)
 
 generate :: forall a b. SingI a => a :=> b -> Proto
-generate g
-  = case op of
-      DPair _ p -> evalState (gen p) ((S f, m)::STR)
+generate g = evalState (gen $ wrap op) ((S f, m)::STR)
   where
     (op, (f, m)) = runState pgen ((S Z, Map.empty)::STR)
     pgen    = getGen g (RI (sing :: Sing a) (sing :: Sing 'Z))
 
 flatten :: RoleGen m => TRole -> m [Role]
-flatten = undefined
+flatten (RId   i) = return [Rol $ idxToInt i]
+flatten (RProd a b) = (++) <$> flatten a <*> flatten b
+flatten (RSum r1 r2) = (:[]) <$> joinR r1 r2
+flatten _ = error "Panic! Ill-formed protocol: Any can only occur \
+                  \ as part of RSum"
+
+wrap :: DPair a ('RId 'Z) -> 'RId 'Z :==> 'RId 'Z
+wrap (DPair (RI _ SZ) p) = p
+wrap (DPair o p) = TSeq o p (TComm o (RI (getType o) SZ) Id)
 
 gen :: RoleGen m => r1 :==> r2 -> m Proto
 gen (TComm ri ro f) = fmap Comm $
@@ -366,33 +403,27 @@ gen (TComm ri ro f) = fmap Comm $
   where
     t1 = getType ri
     t2 = getType ro
-gen _ = undefined
--- gen (TComm ri ro f) = fmap Comm $
---   Msg <$> flatten ri
---       <*> flatten ro
---       <*> pure (fromSing t1)
---       <*> pure (eraseTy (STArr t1 t2) f)
---   where
---     t1 = getType ri
---     t2 = getType ro
--- gen (TSplit x1 x2) = GComp Par <$> gen x1 <*> gen x2
--- gen (TSeq _ x2 x3) = GComp Seq <$> gen x2 <*> gen x3
--- gen (TBranch x1 x2)
---   = br <$> fresh r <*> flatten r1 <*> flatten r2 <*> gen x1 <*> gen x2
---   where
---     br i i1 i2 a b
---       = Choice i $ addAlt 0 (GComp Seq (msg i i1 $ getType r1) a)
---                  $ addAlt 1 (GComp Seq (msg i i2 $ getType r2) b)
---                  $ emptyAlt
---     msg f t pt = Comm $ Msg [f] t (fromSing pt) (eraseTy (STArr pt pt) Id)
---     r  = fromSing $ RS r1 r2
---     r1 = inR x1
---     r2 = inR x2
--- gen (TSkip _ _) = pure GSkip
---
--- --- XXX: refactor below to Combinators.hs
--- lift :: forall r1 r2.
---        (SingI r1, SingI r2)
---      => CCore (EraseR r1 ':-> EraseR r2)
---      -> (:==>) r1 r2
--- lift = TComm sing sing
+gen (TSplit x1 x2) = GComp Par <$> gen x1 <*> gen x2
+gen (TSeq _ x2 x3) = GComp Seq <$> gen x2 <*> gen x3
+gen (TBranchI x1 x2) = genBranch x1 x2
+gen (TBranchJ x1 x2) = genBranch x1 x2
+gen (TBranchL x1) = gen x1
+gen (TBranchR x1) = gen x1
+gen (TSkip _ _) = pure GSkip
+
+
+genBranch :: RoleGen m => r1 :==> r2 -> r3 :==> r4 -> m Proto
+genBranch x1 x2
+  = br <$> joinR r1 r2 <*> flatten r1 <*> flatten r2 <*> gen x1 <*> gen x2
+  where
+    br i i1 i2 a b
+      = case (t1, t2) of
+          (SomeSing rt1, SomeSing rt2) ->
+            Choice i $ addAlt 0 (GComp Seq (msg i i1 rt1) a)
+                     $ addAlt 1 (GComp Seq (msg i i2 rt2) b)
+                     $ emptyAlt
+    msg f t pt = Comm $ Msg [f] t (fromSing pt) (eraseTy (STArr pt pt) Id)
+    r1 = inR x1
+    r2 = inR x2
+    t1 = inTy x1
+    t2 = inTy x2

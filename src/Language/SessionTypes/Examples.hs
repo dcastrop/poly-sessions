@@ -7,6 +7,8 @@
 module Language.SessionTypes.Examples
 where
 
+import Prelude hiding ( (.), id )
+import Control.Category
 import Data.Singletons
 import Data.Text.Prettyprint.Doc ( pretty )
 
@@ -16,8 +18,8 @@ import Language.SessionTypes.Common
 import Language.SessionTypes.TSession.Syntax
 import Language.SessionTypes.RwSession
 
-testRw :: a :=> b -> IO ()
-testRw g = putStrLn $ show $ pretty $ generate g
+testGen :: SingI a => a :=> b -> IO ()
+testGen g = putStrLn $ show $ pretty $ generate g
 
 iter :: Int -> (a -> a -> a) -> a -> a -> a
 iter i c idf f = go i
@@ -26,29 +28,35 @@ iter i c idf f = go i
          | j == 1     = f
          | otherwise = f `c` go (j-1)
 
-example1 :: CInt :~: 0 :=> CInt :~: 0
-example1 = gid
+example1 :: CInt :=> CInt
+example1 = id
 
 inc :: CCore (CInt ':-> CInt)
 inc = Prim Plus `Comp` Split Id (Const $ Prim $ CInt 1)
 
-example2 :: CInt :~: 0 :=> CInt :~: 1
-example2 = lift inc `gcomp` example1
+example2 :: CInt :=> CInt
+example2 = example1 . lift inc . example1
 
-example3 :: CInt :~: 0 :=> CInt :~: 1 :*: CInt :~: 0
-example3 = gsplit (lift inc) gid
+example3 :: CInt :=> 'TProd CInt CInt
+example3 = gsplit (lift inc) id
 
 type Ex1 = 'PProd 'PId 'PId
 
-example4 :: CInt :~: 1 :*: CInt :~: 1 :=> CInt :~: 1 :*: CInt :~: 1
+example4 :: 'TProd CInt CInt :=> 'TProd CInt CInt
 example4 = gfmap (sing :: Sing Ex1) (lift inc)
---
--- example5 :: 'TProd CInt CInt :=> 'TProd CInt CInt
--- example5 = gsplit (lift Fst) (lift Snd)
---
--- testProto :: a :=> b -> IO ()
--- testProto g = putStrLn $ show $ pretty $ getGen g (Rol 0) (Rol 1)
---
+
+example5 :: 'TProd CInt CInt :=> 'TProd CInt CInt
+example5 = gsplit gsnd gfst
+
+example51 :: 'TProd CInt CInt :=> 'TProd CInt CInt
+example51 = example5 . example5
+
+double :: CCore (CInt ':-> CInt)
+double = Prim Mult `Comp` Split Id (Const $ Prim $ CInt 2)
+
+example6 :: 'TSum CInt CInt :=> CInt
+example6 = gCase (lift inc) (lift double)
+
 --
 -- example6 :: 'TProd CInt CInt :=> 'TProd CInt CInt
 -- example6 = gsplit (lift Id) (lift Id) `gcomp` lift Fst
