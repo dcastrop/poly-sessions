@@ -18,7 +18,7 @@ import Language.SessionTypes.Common
 import Language.SessionTypes.TSession.Syntax
 import Language.SessionTypes.RwSession
 
-testGen :: SingI a => a :=> b -> IO ()
+testGen :: (SingI a, SingI b) => a :=> b -> IO ()
 testGen g = putStrLn $ show $ pretty $ generate g
 
 iter :: Int -> (a -> a -> a) -> a -> a -> a
@@ -31,14 +31,14 @@ iter i c idf f = go i
 example1 :: CInt :=> CInt
 example1 = id
 
-inc :: CCore (CInt ':-> CInt)
+inc :: CCore (CInt :-> CInt)
 inc = Prim Plus `Comp` Split Id (Const $ Prim $ CInt 1)
 
 example2 :: CInt :=> CInt
 example2 = example1 . lift inc . example1
 
 example3 :: CInt :=> 'TProd CInt CInt
-example3 = gsplit (lift inc) id
+example3 = gSplit (lift inc) id
 
 type Ex1 = 'PProd 'PId 'PId
 
@@ -46,18 +46,20 @@ example4 :: 'TProd CInt CInt :=> 'TProd CInt CInt
 example4 = gfmap (sing :: Sing Ex1) (lift inc)
 
 example5 :: 'TProd CInt CInt :=> 'TProd CInt CInt
-example5 = gsplit gsnd gfst
+example5 = gSplit gSnd gFst
 
 example51 :: 'TProd CInt CInt :=> 'TProd CInt CInt
 example51 = example5 . example5
 
-double :: CCore (CInt ':-> CInt)
+double :: CCore (CInt :-> CInt)
 double = Prim Mult `Comp` Split Id (Const $ Prim $ CInt 2)
 
 example6 :: 'TSum CInt CInt :=> CInt
 example6 = gCase (lift inc) (lift double)
 
---
+example7 :: 'TSum CInt CInt :=> 'TSum CInt CInt
+example7 = gCase (gInl . lift inc) (gInr . lift double)
+
 -- example6 :: 'TProd CInt CInt :=> 'TProd CInt CInt
 -- example6 = gsplit (lift Id) (lift Id) `gcomp` lift Fst
 --

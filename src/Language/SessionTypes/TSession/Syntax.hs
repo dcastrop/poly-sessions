@@ -104,25 +104,67 @@ type family Unify (t1 :: TRole) (t2 :: TRole) :: TRole where
 
 infixl 6 :+:
 infixl 7 :*:
+infix 5 :::
 
 type (:*:) = 'RProd
 type (:+:) = 'RSum
 
-data STRole (a :: Type TyPrim) (t :: TRole) where
-  RI :: SType t -> SIdx n          -> STRole t            ('RId n)
-  RP :: STRole a r1 -> STRole b r2 -> STRole ('TProd a b) ('RProd r1 r2)
-  RS :: STRole a r1 -> STRole b r2 -> STRole ('TSum a b)  ('RSum r1 r2)
-  TL :: SType b -> STRole a r1     -> STRole ('TSum a b)  ('RSum r1 'RAny)
-  TR :: SType a -> STRole b r2     -> STRole ('TSum a b)  ('RSum 'RAny r2)
+data (:::) (t :: TRole) (a :: Type TyPrim)  where
+  RI :: SType t -> SIdx n    -> 'RId n         ::: t
+  RP :: r1 ::: a -> r2 ::: b -> 'RProd r1 r2   ::: 'TProd a b
+  RS :: r1 ::: a -> r2 ::: b -> 'RSum r1 r2    ::: 'TSum a b
+  TL :: SType b  -> r1 ::: a -> 'RSum r1 'RAny ::: 'TSum a b
+  TR :: SType a  -> r2 ::: b -> 'RSum 'RAny r2 ::: 'TSum a b
 
-toSRole :: STRole a t -> TRole
+getType :: t ::: a -> SType a
+getType (RI t _) = t
+getType (TL t r) = STSum (getType r) t
+getType (TR t r) = STSum t (getType r)
+getType (RS l r) = STSum (getType l) (getType r)
+getType (RP l r) = STProd (getType l) (getType r)
+
+injRI :: 'RId n :~: 'RId m -> n :~: m
+injRI Refl = Refl
+
+injRP :: 'RProd a b :~: 'RProd c d -> (a :~: c, b :~: d)
+injRP Refl = (Refl, Refl)
+
+injRS :: 'RSum a b :~: 'RSum c d -> (a :~: c, b :~: d)
+injRS Refl = (Refl, Refl)
+
+eqR :: t1 ::: a -> t2 ::: a -> Decision (t1 :~: t2)
+eqR (RI _ n) (RI _ m) =
+  case n %~ m of
+    Proved Refl -> Proved Refl
+    Disproved f -> Disproved $ \x -> f (injRI x)
+eqR (RP a b) (RP c d) =
+  case (eqR a c, eqR b d) of
+    (Proved Refl, Proved Refl) -> Proved Refl
+    (Disproved f, _          ) -> Disproved $ \x -> f $ fst $ injRP x
+    (_          , Disproved f) -> Disproved $ \x -> f $ snd $ injRP x
+eqR (RS a b) (RS c d) =
+  case (eqR a c, eqR b d) of
+    (Proved Refl, Proved Refl) -> Proved Refl
+    (Disproved f, _          ) -> Disproved $ \x -> f $ fst $ injRS x
+    (_          , Disproved f) -> Disproved $ \x -> f $ snd $ injRS x
+eqR (TL _ a) (TL _ b) =
+  case eqR a b of
+    Proved Refl -> Proved Refl
+    Disproved f -> Disproved $ \x -> f $ fst $ injRS x
+eqR (TR _ a) (TR _ b) =
+  case eqR a b of
+    Proved Refl -> Proved Refl
+    Disproved f -> Disproved $ \x -> f $ snd $ injRS x
+eqR _ _ = Disproved $ \x -> case x of {} -- XXX: Hack
+
+toSRole :: t ::: a -> TRole
 toSRole (RI _ i) = RId $ fromSing i
 toSRole (RP a b) = RProd (toSRole a) (toSRole b)
 toSRole (RS a b) = RSum  (toSRole a) (toSRole b)
 toSRole (TL _ b) = RSum  (toSRole b) RAny
 toSRole (TR _ b) = RSum  RAny (toSRole b)
 
-unify :: STRole a t1 -> STRole a t2 -> Maybe (STRole a (Unify t1 t2))
+unify :: t1 ::: a -> t2 ::: a -> Maybe (Unify t1 t2 ::: a)
 unify (RI t1 n1) (RI t2 n2) =
     case (t1 %~ t2, n1 %~ n2) of
       (Proved Refl, Proved Refl) -> Just (RI t1 n1)
@@ -168,17 +210,20 @@ class Monad m => RoleGen m where
    fresh :: m Idx
    joinR :: TRole -> TRole -> m Role
 
-type STR = (Idx, Map (TRole, TRole) Role)
+type STR = (Idx, Map TRole Role)
 
 instance RoleGen (State STR) where
   fresh = get >>= \(r, m) -> put (S r, m) >> return r
+  joinR (RId n) (RId m)
+    | n == m = return $ Rol $ idxToInt n
   joinR a b = get >>= \(r, m) ->
       let rol = Rol $ idxToInt r
-          newm = foldl' (\nm s -> Map.insert s rol nm) m $ combinations a b
-      in maybe (put (S r, newm) *> return rol) return (Map.lookup (a,b) m)
+          newm = Map.insert a rol $ Map.insert b rol m
+      in maybe (put (S r, newm) *> return rol) return (lookupR m)
     where
-      combinations r1 r2
-        = nub $ filter (/= (RAny,RAny)) [(r1,r2), (r1,RAny), (RAny, r2)]
+      lookupR m = maybe (maybe Nothing Just $ Map.lookup b m)
+                        Just
+                        (Map.lookup a m)
 
 infix 9 :<:
 
@@ -192,27 +237,27 @@ data (:<:) :: TRole -> TRole -> * where
 infixr 1 :==>
 
 data (:==>) :: TRole -> TRole -> * where
-  TComm  :: STRole a ri
-         -> STRole b ro
-         -> CCore (a ':-> b)
+  TComm  :: ri ::: a
+         -> ro ::: b
+         -> CCore (a :-> b)
          -> ri :==> ro
 
   TSplit  :: ri :==> ro1
           -> ri :==> ro2
           -> ri :==> ro1 :*: ro2
 
-  TSeq    :: STRole a r
+  TSeq    :: r ::: a
           -> ri :==> r
           -> r  :==> ro
           -> ri :==> ro
 
-  TBranchI :: 'RId n :==> ro1
-           -> 'RId n :==> ro2
-           -> 'RId n :==> Unify ro1 ro2
+  TBranchI :: 'RId n :==> ro
+           -> 'RId n :==> ro
+           -> 'RId n :==> ro
 
-  TBranchJ :: ri1 :==> ro1
-           -> ri2 :==> ro2
-           -> ri1 :+: ri2 :==> Unify ro1 ro2
+  TBranchJ :: ri1 :==> ro
+           -> ri2 :==> ro
+           -> ri1 :+: ri2 :==> ro
 
   TBranchL :: ri1 :==> ro
            -> ri1 :+: ri2 :==> ro
@@ -220,7 +265,7 @@ data (:==>) :: TRole -> TRole -> * where
   TBranchR :: ri2 :==> ro
            -> ri1 :+: ri2 :==> ro
 
-  TSkip   :: STRole a ri
+  TSkip   :: ri ::: a
           -> ro :<: ri
           -> ri :==> ro
 
@@ -262,18 +307,35 @@ inTy (TBranchR r1) = inTy r1
 
 type Proto = GT CType ECore
 
-data DPair b t1 = forall t2. DPair (STRole b t2) (t1 :==> t2)
-newtype (:=>) a b
-  = Gen { getGen :: forall t1 m. RoleGen m => STRole a t1 -> m (DPair b t1) }
+data DPair b t1 = forall t2. DPair (t2 ::: b) (t1 :==> t2)
+
+data (:=>) a b
+  = Gen { getGen2 :: forall t1 t2 m. RoleGen m
+                  => t1 ::: a -> t2 ::: b -> m (t1 :==> t2)
+        , getGen1 :: forall t1 m. RoleGen m =>  t1 ::: a -> m (DPair b t1) }
 
 gId :: forall a. a :=> a
-gId = Gen $ \r1 -> pure $ DPair r1 (TSkip r1 LR)
+gId
+  = Gen
+  { getGen1 = \r1 -> return $ DPair r1 $ TSkip r1 LR
+  , getGen2 = \r1 r2 ->
+                case eqR r1 r2 of
+                  Proved Refl -> return $ TSkip r1 LR
+                  Disproved _ -> return $ TComm r1 r2 Id
+  }
 
 gComp :: forall a b c. b :=> c -> a :=> b -> a :=> c
-gComp f g = Gen $ \r1 -> do
-    DPair r2 p1 <- getGen g r1
-    DPair r3 p2 <- getGen f r2
-    return $ DPair r3 (TSeq r2 p1 p2)
+gComp f g
+  = Gen
+  { getGen1 = \r1 -> do
+      DPair r2 p1 <- getGen1 g r1
+      DPair r3 p2 <- getGen1 f r2
+      return $ DPair r3 (TSeq r2 p1 p2)
+  , getGen2 = \r1 r2 -> do
+      DPair rt p1 <- getGen1 g r1
+      p2 <- getGen2 f rt r2
+      return $ TSeq rt p1 p2
+  }
 
 instance Category (:=>) where
   id = gId
@@ -282,85 +344,143 @@ instance Category (:=>) where
 -- Instance Arrow fails because (:=>) has to have type (a -> b). FIXME:
 -- generalise arrows, or move my Language.Poly.C to Haskell types?
 
--- If we get a pair of roles, we just skip, with the left or right role as
--- output role.
--- If we get a single role, we lift the "fst" function
-gfst :: forall a b. 'TProd a b :=> a
-gfst = Gen $ \r1 ->
-    case r1 of
-      RP r11            _ -> return $ DPair r11 (TSkip r1 (P1 LR))
-      (RI (STProd a _) _) -> getGen (liftS a Fst) r1
+withFreshId :: RoleGen m => (forall i. SIdx i -> m b) -> m b
+withFreshId f = fresh >>= \i -> withSomeSing i f
 
-gsnd :: forall a b. 'TProd a b :=> b
-gsnd = Gen $ \r1 ->
-    case r1 of
-      RP _ r12            -> return $ DPair r12 (TSkip r1 (P2 LR))
-      (RI (STProd _ b) _) -> getGen (liftS b Snd) r1
+embed :: forall a b t1 m. (SingI (a :-> b), RoleGen m)
+      => t1 ::: a -> CCore (a :-> b) -> m (DPair b t1)
+embed ri f = withFreshId $ \i -> do
+    let r = RI sb i
+    return $ DPair r (TComm ri r f)
+  where
+    sb = case sing :: SType (a :-> b) of
+           STArr _ b -> b
 
-gsplit :: forall a b c. a :=> b -> a :=> c -> a :=> 'TProd b c
-gsplit f g = Gen $ \r1 -> do
-   DPair o1 p1 <- getGen f r1
-   DPair o2 p2 <- getGen g r1
-   return $ DPair (RP o1 o2) (TSplit p1 p2)
+embedS :: forall a b t1 m. RoleGen m
+      => Sing (a :-> b) -> t1 ::: a -> CCore (a :-> b) -> m (DPair b t1)
+embedS (singInstance -> SingInstance) ri f = embed ri f
 
-lift :: forall a b. SingI b => CCore (a ':-> b) -> a :=> b
-lift f = Gen $ \ri -> do
-      SomeSing i <- toSing <$> fresh
-      let r = RI (sing :: Sing b) i
-      return $ DPair r (TComm ri r f)
+lift :: forall a b. SingI (a :-> b) => CCore (a :-> b) -> a :=> b
+lift Id = gId
+lift Fst = gFst
+lift Snd = gSnd
+lift Inl = case sing :: SType (a :-> b) of
+             STArr _ (STSum _ b) -> case singInstance b of
+                                     SingInstance -> gInl
+             _ -> error "Panic! Impossible case: ill-typed GADT"
+lift Inr = case sing :: SType (a :-> b) of
+             STArr _ (STSum a _) -> case singInstance a of
+                                     SingInstance -> gInr
+             _ -> error "Panic! Impossible case: ill-typed GADT"
+lift (Split f g) = gSplit (lift f) (lift g)
+lift f
+  = Gen
+  { getGen1 = \ri -> embed ri f
+  , getGen2 = \ri ro -> return $ TComm ri ro f
+  }
 
-liftS :: forall a b. Sing b -> CCore (a ':-> b) -> a :=> b
+liftS :: forall a b. Sing (a :-> b) -> CCore (a :-> b) -> a :=> b
 liftS (singInstance -> SingInstance) f = lift f
 
-gprod :: forall a b c d. a :=> b -> c :=> d -> 'TProd a c :=> 'TProd b d
-gprod f g = gsplit (f . gfst) (g . gsnd)
 
--- Sums:
+gFst :: forall a b. 'TProd a b :=> a
+gFst
+  = Gen
+  { getGen1 = \r1 ->
+     case r1 of
+       RP r11            _ -> return $ DPair r11 (TSkip r1 (P1 LR))
+       (RI t@(STProd a _) _) -> embedS (STArr t a) r1 Fst
+  , getGen2 = \r1 r2 ->
+     case r1 of
+       RP r11 _ -> TSeq r11 (TSkip r1 (P1 LR)) <$> getGen2 gId r11 r2
+       _      -> return $ TComm r1 r2 Fst
+  }
+
+gSnd :: forall a b. 'TProd a b :=> b
+gSnd
+  = Gen
+  { getGen1 = \r1 ->
+     case r1 of
+       RP _ r12            -> return $ DPair r12 (TSkip r1 (P2 LR))
+       (RI t@(STProd _ b) _) -> embedS (STArr t b) r1 Snd
+  , getGen2 = \r1 r2 ->
+     case r1 of
+       RP _ r12 -> TSeq r12 (TSkip r1 (P2 LR)) <$> getGen2 gId r12 r2
+       _      -> return $ TComm r1 r2 Snd
+  }
+
+gSplit :: forall a b c. a :=> b -> a :=> c -> a :=> 'TProd b c
+gSplit f g
+  = Gen
+  { getGen1 = \r1 -> do
+      DPair o1 p1 <- getGen1 f r1
+      DPair o2 p2 <- getGen1 g r1
+      return $ DPair (RP o1 o2) (TSplit p1 p2)
+  , getGen2 = \r1 r2 -> do
+      DPair o1 p1 <- getGen1 f r1
+      DPair o2 p2 <- getGen1 g r1
+      p3 <- getGen2 id (RP o1 o2) r2
+      return $ TSeq (RP o1 o2) (TSplit p1 p2) p3
+  }
+
+
+gProd :: forall a b c d. a :=> b -> c :=> d -> 'TProd a c :=> 'TProd b d
+gProd f g = gSplit (f . gFst) (g . gSnd)
+
+-- -- Sums:
 
 gInl :: forall a b. SingI b => a :=> 'TSum a b
-gInl = Gen $ \r1 -> return $ DPair (TL (sing :: SType b) r1) (TSkip r1 (S1 LR))
+gInl
+  = Gen
+  { getGen1 = \r1 ->
+      return $ DPair (TL (sing :: SType b) r1) (TSkip r1 (S1 LR))
+  , getGen2 = \r1 r2 -> return $ TComm r1 r2 Inl
+  }
 
 gInr :: forall a b. SingI a => b :=> 'TSum a b
-gInr = Gen $ \r1 -> return $ DPair (TR (sing :: SType a) r1) (TSkip r1 (S2 LR))
-
-getType :: STRole a t -> SType a
-getType (RI t _) = t
-getType (TL t r) = STSum (getType r) t
-getType (TR t r) = STSum t (getType r)
-getType (RS l r) = STSum (getType l) (getType r)
-getType (RP l r) = STProd (getType l) (getType r)
+gInr
+  = Gen
+  { getGen1 = \r1 ->
+      return $ DPair (TR (sing :: SType a) r1) (TSkip r1 (S2 LR))
+  , getGen2 = \r1 r2 -> return $ TComm r1 r2 Inr
+  }
 
 gCase :: forall a b c. a :=> c -> b :=> c -> 'TSum a b :=> c
-gCase f g = Gen $ \r1 ->
-    case r1 of
-      RS l r -> do
-          DPair o1 p1 <- getGen f l
-          DPair o2 p2 <- getGen g r
-          case unify o1 o2 of
-            Just o -> return $ DPair o $ TBranchJ p1 p2
-            Nothing -> do
-              SomeSing i <- toSing <$> fresh
-              let o = RI (getType o1) i
-              return $ DPair o (TBranchJ (TSeq o1 p1 (TComm o1 o Id))
-                                         (TSeq o2 p2 (TComm o2 o Id)))
-      TL _ l -> do
-          DPair o1 p1 <- getGen f l
-          return $ DPair o1 (TBranchL p1)
+gCase f g
+  = Gen
+  { getGen1 = \r1 ->
+      case r1 of
+       RS l r -> do
+           DPair o1 p1 <- getGen1 f l
+           p2 <- getGen2 g r o1
+           return $ DPair o1 $ TBranchJ p1 p2
+       TL _ l -> do
+           DPair o1 p1 <- getGen1 f l
+           return $ DPair o1 (TBranchL p1)
 
-      TR _ l -> do
-          DPair o1 p1 <- getGen g l
-          return $ DPair o1 (TBranchR p1)
+       TR _ l -> do
+           DPair o1 p1 <- getGen1 g l
+           return $ DPair o1 (TBranchR p1)
 
-      RI (STSum a b) n -> do
-          DPair o1 p1 <- getGen f (RI a n)
-          DPair o2 p2 <- getGen g (RI b n)
-          case unify o1 o2 of
-            Just o -> return $ DPair o $ TBranchI p1 p2
-            Nothing -> do
-              SomeSing i <- toSing <$> fresh
-              let o = RI (getType o1) i
-              return $ DPair o (TBranchI (TSeq o1 p1 (TComm o1 o Id))
-                                         (TSeq o2 p2 (TComm o2 o Id)))
+       RI (STSum a b) n -> do
+           DPair o1 p1 <- getGen1 f (RI a n)
+           p2 <- getGen2 g (RI b n) o1
+           return $ DPair o1 $ TBranchI p1 p2
+  , getGen2 =  \r1 r2 ->
+      case r1 of
+       RS l r -> do
+           p1 <- getGen2 f l r2
+           p2 <- getGen2 g r r2
+           return $ TBranchJ p1 p2
+       TL _ l -> TBranchL <$> getGen2 f l r2
+
+       TR _ l -> TBranchR <$> getGen2 g l r2
+
+       RI (STSum a b) n -> do
+           p1 <- getGen2 f (RI a n) r2
+           p2 <- getGen2 g (RI b n) r2
+           return $ TBranchI p1 p2
+  }
 
 gsum :: forall a b c d. (SingI c, SingI d)
      => a :=> c -> b :=> d -> 'TSum a b :=> 'TSum c d
@@ -372,16 +492,16 @@ gfmap :: forall r1 r2 f. (SingI r1, SingI r2)
       -> (:=>) (f :@: r1) (f :@: r2)
 gfmap (SPK _) _ = id
 gfmap SPId g = g
-gfmap (SPProd p1 p2) f = gprod (gfmap p1 f) (gfmap p2 f)
+gfmap (SPProd p1 p2) f = gProd (gfmap p1 f) (gfmap p2 f)
 gfmap (SPSum p1 p2) f
   = case (appD p1 (sing :: Sing r2), appD p2 (sing :: Sing r2)) of
         (SingInstance, SingInstance) -> gsum (gfmap p1 f) (gfmap p2 f)
 
-generate :: forall a b. SingI a => a :=> b -> Proto
-generate g = evalState (gen $ wrap op) ((S f, m)::STR)
+generate :: forall a b. (SingI a, SingI b) => a :=> b -> Proto
+generate g = evalState (pgen >>= gen) ((S Z, Map.empty)::STR)
   where
-    (op, (f, m)) = runState pgen ((S Z, Map.empty)::STR)
-    pgen    = getGen g (RI (sing :: Sing a) (sing :: Sing 'Z))
+    pgen    = getGen2 g (RI (sing :: Sing a) (sing :: Sing 'Z))
+                        (RI (sing :: Sing b) (sing :: Sing 'Z))
 
 flatten :: RoleGen m => TRole -> m [Role]
 flatten (RId   i) = return [Rol $ idxToInt i]
@@ -389,10 +509,6 @@ flatten (RProd a b) = (++) <$> flatten a <*> flatten b
 flatten (RSum r1 r2) = (:[]) <$> joinR r1 r2
 flatten _ = error "Panic! Ill-formed protocol: Any can only occur \
                   \ as part of RSum"
-
-wrap :: DPair a ('RId 'Z) -> 'RId 'Z :==> 'RId 'Z
-wrap (DPair (RI _ SZ) p) = p
-wrap (DPair o p) = TSeq o p (TComm o (RI (getType o) SZ) Id)
 
 gen :: RoleGen m => r1 :==> r2 -> m Proto
 gen (TComm ri ro f) = fmap Comm $
@@ -422,7 +538,9 @@ genBranch x1 x2
             Choice i $ addAlt 0 (GComp Seq (msg i i1 rt1) a)
                      $ addAlt 1 (GComp Seq (msg i i2 rt2) b)
                      $ emptyAlt
-    msg f t pt = Comm $ Msg [f] t (fromSing pt) (eraseTy (STArr pt pt) Id)
+    msg f t pt
+      | [f] == t = GSkip
+      | otherwise = Comm $ Msg [f] t (fromSing pt) (eraseTy (STArr pt pt) Id)
     r1 = inR x1
     r2 = inR x2
     t1 = inTy x1

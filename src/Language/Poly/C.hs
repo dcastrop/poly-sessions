@@ -104,14 +104,14 @@ type CType = Type PrimTy
 
 data CExpr (t :: Type TyPrim) where
     CInt  :: Int -> CExpr CInt
-    Plus  :: CNum a => CExpr ('TProd (CT a) (CT a) ':-> CT a)
-    Minus :: CNum a => CExpr ('TProd (CT a) (CT a) ':-> CT a)
-    Mult  :: CNum a => CExpr ('TProd (CT a) (CT a) ':-> CT a)
-    Div   :: CNum a => CExpr ('TProd (CT a) (CT a) ':-> CT a)
-    Mod   :: CNum a => CExpr ('TProd (CT a) (CT a) ':-> CT a)
-    Get   :: CExpr ('TProd (CT ('TVector i a)) CInt ':-> CT a)
+    Plus  :: CNum a => CExpr ('TProd (CT a) (CT a) :-> CT a)
+    Minus :: CNum a => CExpr ('TProd (CT a) (CT a) :-> CT a)
+    Mult  :: CNum a => CExpr ('TProd (CT a) (CT a) :-> CT a)
+    Div   :: CNum a => CExpr ('TProd (CT a) (CT a) :-> CT a)
+    Mod   :: CNum a => CExpr ('TProd (CT a) (CT a) :-> CT a)
+    Get   :: CExpr ('TProd (CT ('TVector i a)) CInt :-> CT a)
     Put   :: CExpr ('TProd ('TProd CInt (CT a)) (CT ('TVector i a))
-                   ':-> CT ('TVector i a))
+                   :-> CT ('TVector i a))
 
 data UCExpr t where
     UCInt  :: Int -> UCExpr t

@@ -34,11 +34,11 @@ newtype (:=>) (a :: Type TyPrim) (b :: Type TyPrim)
   = ParGen { getGen :: Role -> Role -> Proto }
 
 lift :: forall a b. (SingI a, SingI b)
-     => CCore (a ':-> b) -> a :=> b
+     => CCore (a :-> b) -> a :=> b
 lift = liftS sing sing
 
 liftS :: forall a b. Sing a -> Sing b
-     -> CCore (a ':-> b) -> a :=> b
+     -> CCore (a :-> b) -> a :=> b
 liftS s1 s2 x = ParGen $ \ri ro ->
   Comm (Msg [ri] [ro] (fromSing s1) (eraseTy t x))
   where

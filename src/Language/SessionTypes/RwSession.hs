@@ -141,7 +141,7 @@ substMsgL r rs g m@Msg { rfrom = rf, rto = rt, rty = mty, msgAnn = f }
   | Just _ <- r `elemIndex` rt
   , (length rt == 1 && length rs >= 1) || (length rt > 1 && length rs == 1)
   = do b <- case ty f of
-             _ :-> b -> return b
+             TArr _ b -> return b
              _       -> throwError $ InvalidRw $ IllTyped m
        nf <- fComp m (getG g b) f
        return $ Msg { rfrom = rf
@@ -158,24 +158,24 @@ substMsgL r rs g m@Msg { rfrom = rf, rto = rt, rty = mty, msgAnn = f }
     substType _ _ = error "Panic! Impossible case"
     msubst Nothing t = return t
     msubst (Just e) _ = case ty e of
-                          a :-> _ -> return a
+                          TArr a _ -> return a
                           _       -> throwError $ InvalidRw $ IllTyped m
     getFns n tys = zipWith mkF (take n tys) (repeat Id)
                  ++ (getG g (tys !! n)) :
                    zipWith mkF (drop (n+1) tys) (repeat Id)
-    mkF t h = ECore (t :-> t) h
-    getG Nothing t = ECore (t :-> t) Id
+    mkF t h = ECore (TArr t t) h
+    getG Nothing t = ECore (TArr t t) Id
     getG (Just e) _ = e
 
 
 fComp :: MonadError RwError m => Msg CType ECore -> ECore -> ECore -> m ECore
-fComp _ (ECore (_ :-> b) f) (ECore (a :-> t) g)
-  = return $ ECore (a :-> b) (comp t f g)
+fComp _ (ECore (TArr _ b) f) (ECore (TArr a t) g)
+  = return $ ECore (TArr a b) (comp t f g)
 fComp m _ _ = throwError $ InvalidRw $ IllTyped m
 
 fProd :: MonadError RwError m => Msg CType ECore -> ECore -> ECore -> m ECore
-fProd _ (ECore (a :-> b) f) (ECore (c :-> d) g)
-  = return $ ECore (TProd a c :-> TProd b d)
+fProd _ (ECore (TArr a b) f) (ECore (TArr c d) g)
+  = return $ ECore (TArr (TProd a c) (TProd b d))
                    (split (comp a f Fst) (comp c g Snd))
 fProd m _ _ = throwError $ InvalidRw $ IllTyped m
 
