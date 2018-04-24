@@ -60,6 +60,9 @@ example6 = gCase (lift inc) (lift double)
 example7 :: 'TSum CInt CInt :=> 'TSum CInt CInt
 example7 = gCase (gInl . lift inc) (gInr . lift double)
 
+example8 :: 'TSum CInt CInt :=> 'TSum CInt CInt
+example8 = gCase gInl gInr
+
 -- example6 :: 'TProd CInt CInt :=> 'TProd CInt CInt
 -- example6 = gsplit (lift Id) (lift Id) `gcomp` lift Fst
 --
