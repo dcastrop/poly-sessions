@@ -183,11 +183,13 @@ data SomeRole t1 t2 a = forall t. Join (t ::: a, t1 :==> t, t2 :==> t)
 rjoin :: RoleGen m => t1 ::: a -> t2 ::: a -> m (SomeRole t1 t2 a)
 rjoin i1@(TL _ a) i2@(TR _ b)
   = return $ Join (RS a b, TSkip i1 (S3 LR), TSkip i2 (S4 LR))
--- rjoin (TR _ a) (TL _ b) = return $ SomeRole RS b a
--- rjoin a b
---   | Proved Refl <- eqR a b = return $ SomeRole a
---   | otherwise             = withFreshId $ \i ->
---       return $ SomeRole $ RI (getType a) i
+rjoin i2@(TR _ a) i1@(TL _ b)
+  = return $ Join (RS b a, TSkip i2 (S4 LR), TSkip i1 (S3 LR))
+rjoin a b
+   | Proved Refl <- eqR a b = return $ Join (a, TSkip a LR, TSkip a LR)
+   | otherwise             = withFreshId $ \i -> do
+        let o = RI (getType a) i
+        return $ Join (o, TComm a o Id, TComm b o Id)
 
 unify :: t1 ::: a -> t2 ::: a -> Maybe (Unify t1 t2 ::: a)
 unify (RI t1 n1) (RI t2 n2) =
