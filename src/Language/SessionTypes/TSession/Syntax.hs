@@ -511,21 +511,22 @@ gCase f g
        RI (STSum a b) n -> do
            DPair o1 p1 <- getGen1 f (RI a n)
            DPair o2 p2 <- getGen1 g (RI b n)
-           return $ DPair (rjoin o1 o2) $ TBranchI p1 p2
+           Join (o, g1, g2) <- rjoin o1 o2
+           return $ DPair o $ TBranchI (TSeq o1 p1 g1) (TSeq o2 p2 g2)
   , getGen2 =  \r1 r2 ->
       case r1 of
        RS l r -> do
-           DPair o1 p1 <- getGen1 f l
-           DPair o2 p2 <- getGen1 g r
-           TSeq (rjoin o1 o2) (TBranchJ p1 p2) <$> comm (rjoin o1 o2) r2 Id
+           p1 <- getGen2 f l r2
+           p2 <- getGen2 g r r2
+           return $ TBranchJ p1 p2
        TL _ l -> TBranchL <$> getGen2 f l r2
 
        TR _ l -> TBranchR <$> getGen2 g l r2
 
        RI (STSum a b) n -> do
-           DPair o1 p1 <- getGen1 f (RI a n)
-           DPair o2 p2 <- getGen1 g (RI b n)
-           TSeq (rjoin o1 o2) (TBranchI p1 p2) <$> comm (rjoin o1 o2) r2 Id
+           p1 <- getGen2 f (RI a n) r2
+           p2 <- getGen2 g (RI b n) r2
+           return $ TBranchI p1 p2
   }
 
 gsum :: forall a b c d. (SingI c, SingI d)
