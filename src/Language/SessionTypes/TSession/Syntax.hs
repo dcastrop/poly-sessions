@@ -17,9 +17,9 @@
 module Language.SessionTypes.TSession.Syntax
 where
 
-import Prelude hiding ( (.), id )
+import Prelude hiding ( (.), id, fst, snd )
 
-import Data.Kind hiding ( Type )
+import Data.Kind
 
 import Data.Singletons
 import Data.Singletons.Decide
@@ -28,9 +28,8 @@ import qualified Data.Map as Map
 import Control.Category
 import Control.Monad.State.Strict hiding ( lift )
 
-import Language.Poly.C
-import Language.Poly.Core hiding ( Nat, getType )
-import Language.Poly.Type
+import Language.FPoly.Core
+import Language.FPoly.Type
 import Language.SessionTypes.Common ( Role(..), addAlt, emptyAlt )
 import Language.SessionTypes.Prefix.Global
 
@@ -80,7 +79,7 @@ instance SingKind Idx where
   toSing (S n) = withSomeSing n (SomeSing . SS)
 
 data SRole
-  = SId (Type TyPrim) Idx
+  = forall a. SId (Proxy a) Idx
   | SProd SRole SRole
   | SSum SRole SRole
   | SAny
@@ -110,26 +109,21 @@ type family Unify (t1 :: TRole) (t2 :: TRole) :: TRole where
   Unify ('RSumR r1)  ('RSumR r2)      = 'RSumR (Unify r1 r2)
   Unify ('RSumR r2)  ('RSum r1 r)     = 'RSum r1 (Unify r2 r)
 
-infixl 6 :+:
-infixl 7 :*:
 infix 5 :::
 
-type (:*:) = 'RProd
-type (:+:) = 'RSum
+instance Polynomial TRole where
+  type (:*:) = 'RProd
+  type (:+:) = 'RSum
 
-data (:::) (t :: TRole) (a :: Type TyPrim)  where
-  RI :: SType t -> SIdx n    -> 'RId n       ::: t
-  RP :: r1 ::: a -> r2 ::: b -> 'RProd r1 r2 ::: 'TProd a b
-  RS :: r1 ::: a -> r2 ::: b -> 'RSum r1 r2  ::: 'TSum a b
-  TL :: SType b  -> r1 ::: a -> 'RSumL r1    ::: 'TSum a b
-  TR :: SType a  -> r2 ::: b -> 'RSumR r2    ::: 'TSum a b
+data (:::) (t :: TRole) (a :: Type)  where
+  RI :: Proxy t -> SIdx n    -> 'RId n       ::: t
+  RP :: r1 ::: a -> r2 ::: b -> 'RProd r1 r2 ::: (a, b)
+  RS :: r1 ::: a -> r2 ::: b -> 'RSum r1 r2  ::: Either a b
+  TL :: Proxy b  -> r1 ::: a -> 'RSumL r1    ::: Either a b
+  TR :: Proxy a  -> r2 ::: b -> 'RSumR r2    ::: Either a b
 
-getType :: t ::: a -> SType a
-getType (RI t _) = t
-getType (TL t r) = STSum (getType r) t
-getType (TR t r) = STSum t (getType r)
-getType (RS l r) = STSum (getType l) (getType r)
-getType (RP l r) = STProd (getType l) (getType r)
+getType :: t ::: a -> Proxy a
+getType _ = Proxy
 
 injRI :: 'RId n :~: 'RId m -> n :~: m
 injRI Refl = Refl
@@ -274,7 +268,7 @@ infixr 1 :==>
 data (:==>) :: TRole -> TRole -> * where
   TComm  :: ri ::: a
          -> ro ::: b
-         -> CCore (a :-> b)
+         -> a :-> b
          -> ri :==> ro
 
   TSplit  :: ri :==> ro1
@@ -464,7 +458,7 @@ gSnd
        _      -> comm r1 r2 Snd
   }
 
-gSplit :: forall a b c. a :=> b -> a :=> c -> a :=> 'TProd b c
+gSplit :: forall a b c. a :=> b -> a :=> c -> a :=> (b, c)
 gSplit f g
   = Gen
   { getGen1 = \r1 -> do
@@ -479,12 +473,12 @@ gSplit f g
   }
 
 
-gProd :: forall a b c d. a :=> b -> c :=> d -> 'TProd a c :=> 'TProd b d
+gProd :: forall a b c d. a :=> b -> c :=> d -> (a, c) :=> (b, d)
 gProd f g = gSplit (f . gFst) (g . gSnd)
 
 -- -- Sums:
 
-gInl :: forall a b. SingI b => a :=> 'TSum a b
+gInl :: forall a b. SingI b => a :=> Either a b
 gInl
   = Gen
   { getGen1 = \r1 -> do
@@ -500,7 +494,7 @@ gInr :: forall a b. SingI a => b :=> 'TSum a b
 gInr
   = Gen
   { getGen1 = \r1 -> do
-      let o = TR (sing :: SType a) r1
+      let o = TR r1
       return $ DPair o (TSkip r1 o (S2 LR) Inr)
   , getGen2 = \r1 r2 -> do
       case eqR r1 r2 of
