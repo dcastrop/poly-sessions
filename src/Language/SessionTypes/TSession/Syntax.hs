@@ -1,3 +1,4 @@
+{-# LANGUAGE TupleSections #-}
 {-# LANGUAGE ViewPatterns #-}
 {-# LANGUAGE EmptyCase #-}
 {-# LANGUAGE FlexibleContexts #-}
@@ -145,7 +146,7 @@ injRL Refl = Refl
 injRR :: 'RSumR a :~: 'RSumR b -> a :~: b
 injRR Refl = Refl
 
-eqR :: t1 ::: a -> t2 ::: a -> Decision (t1 :~: t2)
+eqR :: t1 ::: a -> t2 ::: b -> Decision (t1 :~: t2)
 eqR (RI _ n) (RI _ m) =
   case n %~ m of
     Proved Refl -> Proved Refl
@@ -182,14 +183,19 @@ data SomeRole t1 t2 a = forall t. Join (t ::: a, t1 :==> t, t2 :==> t)
 
 rjoin :: RoleGen m => t1 ::: a -> t2 ::: a -> m (SomeRole t1 t2 a)
 rjoin i1@(TL _ a) i2@(TR _ b)
-  = return $ Join (RS a b, TSkip i1 (S3 LR), TSkip i2 (S4 LR))
-rjoin i2@(TR _ a) i1@(TL _ b)
-  = return $ Join (RS b a, TSkip i2 (S4 LR), TSkip i1 (S3 LR))
+  = return $ Join (o, TSkip i1 o (S3 LR) Id, TSkip i2 o (S4 LR) Id)
+  where
+    o = RS a b
+rjoin i2@(TR _ b) i1@(TL _ a)
+  = return $ Join (o, TSkip i2 o (S4 LR) Id, TSkip i1 o (S3 LR) Id)
+  where
+    o = RS a b
 rjoin a b
-   | Proved Refl <- eqR a b = return $ Join (a, TSkip a LR, TSkip a LR)
+   | Proved Refl <- eqR a b =
+       return $ Join (a, TSkip a a LR Id, TSkip a a LR Id)
    | otherwise             = withFreshId $ \i -> do
         let o = RI (getType a) i
-        return $ Join (o, TComm a o Id, TComm b o Id)
+        fmap Join $ (o,,) <$>  comm a o Id <*> comm b o Id
 
 unify :: t1 ::: a -> t2 ::: a -> Maybe (Unify t1 t2 ::: a)
 unify (RI t1 n1) (RI t2 n2) =
@@ -295,7 +301,9 @@ data (:==>) :: TRole -> TRole -> * where
            -> 'RSumR ri2 :==> ro
 
   TSkip   :: ri ::: a
+          -> ro ::: b
           -> ro :<: ri
+          -> CCore (a :-> b)
           -> ri :==> ro
 
 inR :: r1 :==> r2 -> TRole
@@ -306,11 +314,11 @@ inR (TBranchI r1 _) = inR r1
 inR (TBranchJ r1 r2) = RSum (inR r1) (inR r2)
 inR (TBranchL r1) = RSumL (inR r1)
 inR (TBranchR r1) = RSumR (inR r1)
-inR (TSkip r _) = toSRole r
+inR (TSkip r _ _ _) = toSRole r
 
 inTy :: r1 :==> r2 -> SomeSing (Type TyPrim)
 inTy (TComm r1 _ _) = SomeSing $ getType r1
-inTy (TSkip r _) = SomeSing $ getType r
+inTy (TSkip r _ _ _) = SomeSing $ getType r
 inTy (TSplit r1 _) = inTy r1
 inTy (TSeq _ r1 _) = inTy r1
 inTy (TBranchI r1 r2)
@@ -364,10 +372,10 @@ comm r1 r2 f
 gId :: forall a. a :=> a
 gId
   = Gen
-  { getGen1 = \r1 -> return $ DPair r1 $ TSkip r1 LR
+  { getGen1 = \r1 -> return $ DPair r1 $ TSkip r1 r1 LR Id
   , getGen2 = \r1 r2 ->
                 case eqR r1 r2 of
-                  Proved Refl -> return $ TSkip r1 LR
+                  Proved Refl -> return $ TSkip r1 r1 LR Id
                   Disproved _ -> comm r1 r2 Id
   }
 
@@ -435,11 +443,11 @@ gFst
   = Gen
   { getGen1 = \r1 ->
      case r1 of
-       RP r11            _ -> return $ DPair r11 (TSkip r1 (P1 LR))
+       RP r11            _ -> return $ DPair r11 (TSkip r1 r11 (P1 LR) Fst)
        (RI t@(STProd a _) _) -> embedS (STArr t a) r1 Fst
   , getGen2 = \r1 r2 ->
      case r1 of
-       RP r11 _ -> TSeq r11 (TSkip r1 (P1 LR)) <$> getGen2 gId r11 r2
+       RP r11 _ -> TSeq r11 (TSkip r1 r11 (P1 LR) Fst) <$> getGen2 gId r11 r2
        _      -> comm r1 r2 Fst
   }
 
@@ -448,11 +456,11 @@ gSnd
   = Gen
   { getGen1 = \r1 ->
      case r1 of
-       RP _ r12            -> return $ DPair r12 (TSkip r1 (P2 LR))
+       RP _ r12            -> return $ DPair r12 (TSkip r1 r12 (P2 LR) Snd)
        (RI t@(STProd _ b) _) -> embedS (STArr t b) r1 Snd
   , getGen2 = \r1 r2 ->
      case r1 of
-       RP _ r12 -> TSeq r12 (TSkip r1 (P2 LR)) <$> getGen2 gId r12 r2
+       RP _ r12 -> TSeq r12 (TSkip r1 r12 (P2 LR) Snd) <$> getGen2 gId r12 r2
        _      -> comm r1 r2 Snd
   }
 
@@ -479,17 +487,25 @@ gProd f g = gSplit (f . gFst) (g . gSnd)
 gInl :: forall a b. SingI b => a :=> 'TSum a b
 gInl
   = Gen
-  { getGen1 = \r1 ->
-      return $ DPair (TL (sing :: SType b) r1) (TSkip r1 (S1 LR))
-  , getGen2 = \r1 r2 -> comm r1 r2 Inl
+  { getGen1 = \r1 -> do
+      let o = TL (sing :: SType b) r1
+      return $ DPair o (TSkip r1 o (S1 LR) Inl)
+  , getGen2 = \r1 r2 ->
+      case eqR r1 r2 of
+        Proved Refl -> return $ TSkip r1 r2 LR Inl
+        Disproved _ -> comm r1 r2 Inl
   }
 
 gInr :: forall a b. SingI a => b :=> 'TSum a b
 gInr
   = Gen
-  { getGen1 = \r1 ->
-      return $ DPair (TR (sing :: SType a) r1) (TSkip r1 (S2 LR))
-  , getGen2 = \r1 r2 -> comm r1 r2 Inr
+  { getGen1 = \r1 -> do
+      let o = TR (sing :: SType a) r1
+      return $ DPair o (TSkip r1 o (S2 LR) Inr)
+  , getGen2 = \r1 r2 -> do
+      case eqR r1 r2 of
+        Proved Refl -> return $ TSkip r1 r2 LR Inr
+        Disproved _ -> comm r1 r2 Inr
   }
 
 gCase :: forall a b c. a :=> c -> b :=> c -> 'TSum a b :=> c
@@ -568,19 +584,28 @@ gen (TComm ri ro f) = fmap Comm $
   where
     t1 = getType ri
     t2 = getType ro
-gen (TSplit x1 x2) = GComp Par <$> gen x1 <*> gen x2
-gen (TSeq _ x2 x3) = GComp Seq <$> gen x2 <*> gen x3
+gen (TSplit x1 x2) = go <$> gen x1 <*> gen x2
+  where
+    go GSkip g = g
+    go g GSkip = g
+    go g1 g2   = GComp Par g1 g2
+gen (TSeq _ x2 x3) = go <$> gen x2 <*> gen x3
+  where
+    go GSkip g = g
+    go g GSkip = g
+    go g1 g2   = GComp Seq g1 g2
 gen (TBranchI x1 x2) = genBranch x1 x2
 gen (TBranchJ x1 x2) = genBranch x1 x2
 gen (TBranchL x1) = gen x1
 gen (TBranchR x1) = gen x1
-gen (TSkip _ _) = pure GSkip
-
+gen (TSkip _ _ _ _) = pure GSkip
 
 genBranch :: RoleGen m => r1 :==> r2 -> r3 :==> r4 -> m Proto
 genBranch x1 x2
   = br <$> joinR r1 r2 <*> flatten r1 <*> flatten r2 <*> gen x1 <*> gen x2
   where
+    br _ _ _ GSkip GSkip
+      = GSkip
     br i i1 i2 a b
       = case (t1, t2) of
           (SomeSing rt1, SomeSing rt2) ->

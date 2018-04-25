@@ -49,7 +49,7 @@ example5 :: 'TProd CInt CInt :=> 'TProd CInt CInt
 example5 = gSplit gSnd gFst
 
 example51 :: 'TProd CInt CInt :=> 'TProd CInt CInt
-example51 = example5 . example5
+example51 = example5 . example5 . example5
 
 double :: CCore (CInt :-> CInt)
 double = Prim Mult `Comp` Split Id (Const $ Prim $ CInt 2)
@@ -63,8 +63,8 @@ example7 = gCase (gInl . lift inc) (gInr . lift double)
 example8 :: 'TSum CInt CInt :=> 'TSum CInt CInt
 example8 = gCase gInl gInr
 
--- example6 :: 'TProd CInt CInt :=> 'TProd CInt CInt
--- example6 = gsplit (lift Id) (lift Id) `gcomp` lift Fst
+example9 :: 'TProd CInt CInt :=> 'TProd CInt CInt
+example9 = gSplit id id  . gFst
 --
 --
 -- -- RING
