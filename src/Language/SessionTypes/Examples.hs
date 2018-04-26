@@ -7,18 +7,16 @@
 module Language.SessionTypes.Examples
 where
 
-import Prelude hiding ( (.), id )
-import Control.Category
-import Data.Singletons
+import Prelude hiding ( (.), id, const )
+import Control.Constrained.Arrow
+import Control.Constrained.Category
+import Data.Typeable
 import Data.Text.Prettyprint.Doc ( pretty )
 
-import Language.Poly
-import Language.Poly.C
-import Language.SessionTypes.Common
+import Language.FPoly
 import Language.SessionTypes.TSession.Syntax
-import Language.SessionTypes.RwSession
 
-testGen :: (SingI a, SingI b) => a :=> b -> IO ()
+testGen :: (Typeable a, Typeable b) => a :=> b -> IO ()
 testGen g = putStrLn $ show $ pretty $ generate g
 
 iter :: Int -> (a -> a -> a) -> a -> a -> a
@@ -28,43 +26,58 @@ iter i c idf f = go i
          | j == 1     = f
          | otherwise = f `c` go (j-1)
 
-example1 :: CInt :=> CInt
+example1 :: Int :=> Int
 example1 = id
 
-inc :: CCore (CInt :-> CInt)
-inc = Prim Plus `Comp` Split Id (Const $ Prim $ CInt 1)
+inc :: Int :-> Int
+inc = add . one
+  where
+    add :: (Int, Int) :-> Int
+    add = arr "(+)" (uncurry (+))
+    one :: Int :-> (Int, Int)
+    one = id &&& const 1
 
-example2 :: CInt :=> CInt
+example2 :: Int :=> Int
 example2 = example1 . lift inc . example1
 
-example3 :: CInt :=> 'TProd CInt CInt
+example3 :: Int :=> (Int, Int)
 example3 = gSplit (lift inc) id
 
-type Ex1 = 'PProd 'PId 'PId
+ex1 :: SPoly ('PProd 'PId 'PId)
+ex1 = FProd FId FId
 
-example4 :: 'TProd CInt CInt :=> 'TProd CInt CInt
-example4 = gfmap (sing :: Sing Ex1) (lift inc)
 
-example5 :: 'TProd CInt CInt :=> 'TProd CInt CInt
+example4 :: (Int, Int) :=> (Int, Int)
+example4 = gfmap ex1 (lift inc)
+
+example5 :: (Int, Int) :=> (Int, Int)
 example5 = gSplit gSnd gFst
 
-example51 :: 'TProd CInt CInt :=> 'TProd CInt CInt
+example51 :: (Int, Int) :=> (Int, Int)
 example51 = example5 . example5 . example5
 
-double :: CCore (CInt :-> CInt)
-double = Prim Mult `Comp` Split Id (Const $ Prim $ CInt 2)
+example52 :: (Int, Int) :=> (Int, Int)
+example52 = example5 . example5
 
-example6 :: 'TSum CInt CInt :=> CInt
+double :: Int :-> Int
+double = mult . two
+  where
+    mult :: (Int, Int) :-> Int
+    mult =  arr "(*)" (uncurry (*))
+    two :: Int :-> (Int, Int)
+    two = id &&& const 2
+
+example6 :: Either Int Int :=> Int
 example6 = gCase (lift inc) (lift double)
 
-example7 :: 'TSum CInt CInt :=> 'TSum CInt CInt
+example7 :: Either Int Int :=> Either Int Int
 example7 = gCase (gInl . lift inc) (gInr . lift double)
 
-example8 :: 'TSum CInt CInt :=> 'TSum CInt CInt
+example8 :: Either Int Int :=> Either Int Int
 example8 = gCase gInl gInr
 
-example9 :: 'TProd CInt CInt :=> 'TProd CInt CInt
-example9 = gSplit id id  . gFst
+example9 :: (Int, Int) :=> (Int, Int)
+example9 = gSplit id id . gFst
 --
 --
 -- -- RING

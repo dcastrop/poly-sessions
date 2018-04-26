@@ -9,6 +9,11 @@ extra-deps:
 - ../../poly-lang/code
 - ../../deep-sessions/code
 - ../../quoted-prettyprinter/code
+- ../../tcontrol/code
+- type-natural-0.8.1.0
+- equational-reasoning-0.5.1.0
+- ghc-typelits-presburger-0.2.0.0
+
 
 flags: {}
 extra-package-dbs: []

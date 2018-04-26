@@ -232,11 +232,11 @@ instance Monad m => Alternative (Script m s) where
 instance Monad m => Monoid (Script m s a) where
   mempty = empty
   s1 `mappend` s2 = Script $ \g -> do
-  l1 <- runScript s1 g
-  l2 <- runScript s2 g
-  case l1 of
-    [] -> return l2
-    _  -> return l1
+    l1 <- runScript s1 g
+    l2 <- runScript s2 g
+    case l1 of
+      [] -> return l2
+      _  -> return l1
 
 instance RwErrorM m => MonadError RwError (Script m s) where
   throwError e = Script $ const $ throwError e
@@ -377,20 +377,20 @@ rewriteL Hide (NewRole r1 g)
   = return g
 
 rewriteL DistParSeq (GComp Par (GComp Seq g1 g2) (GComp Seq g3 g4))
-  | outr g1 `Set.intersection` inr g4 == Set.empty
-  , outr g3 `Set.intersection` inr g2 == Set.empty
-  , outr g1 `Set.intersection` outr g3 == Set.empty
+  | outputr g1 `Set.intersection` inputr g4 == Set.empty
+  , outputr g3 `Set.intersection` inputr g2 == Set.empty
+  , outputr g1 `Set.intersection` outputr g3 == Set.empty
   = return $ GComp Seq (GComp Par g1 g3) (GComp Par g2 g4)
 
 rewriteL CompL (NewRole r (GComp Seq (Comm m1) g1))
-  | Set.member r (inr g1)
+  | Set.member r (inputr g1)
   , rto m1 == [r]
   , isPrim (msgAnn m1)
   , Set.fromList (rfrom m1) `Set.intersection` fr g1 == Set.empty
   = substRoleL r (rfrom m1) (Just $ msgAnn m1) g1
 
 rewriteL CompR (NewRole r (GComp Seq  g1 (Comm m1)))
-  | Set.member r (outr g1)
+  | Set.member r (outputr g1)
   , rfrom m1 == [r]
   , isPrim (msgAnn m1)
   , Set.fromList (rto m1) `Set.intersection` fr g1 == Set.empty
@@ -415,9 +415,9 @@ rewriteR Hide g
        return $ NewRole r g
 
 rewriteR DistParSeq (GComp Seq (GComp Par g1 g3) (GComp Par g2 g4))
-  | outr g1 `Set.intersection` inr g4 == Set.empty
-  , outr g3 `Set.intersection` inr g2 == Set.empty
-  , outr g1 `Set.intersection` outr g3 == Set.empty
+  | outputr g1 `Set.intersection` inputr g4 == Set.empty
+  , outputr g3 `Set.intersection` inputr g2 == Set.empty
+  , outputr g1 `Set.intersection` outputr g3 == Set.empty
   = return $ (GComp Par (GComp Seq g1 g2) (GComp Seq g3 g4))
 
 rewriteR _ _

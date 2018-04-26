@@ -30,6 +30,8 @@ dependencies:
 - quoted-prettyprinter >= 0.1 && < 0.2
 - extra >= 1.5 && < 1.6
 - monadplus >= 1.4 && < 1.5
+- type-natural >= 0.8 && < 0.9
+- constrained-control >= 0.1 && < 0.2
 
 library:
   source-dirs: src
