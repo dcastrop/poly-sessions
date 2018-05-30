@@ -7,7 +7,7 @@
 module Language.SessionTypes.Examples
 where
 
-import Prelude hiding ( (.), id, const )
+import Prelude hiding ( (.), id, const, fst, snd )
 import Control.Constrained.Arrow
 import Control.Constrained.Category
 import Data.Typeable
@@ -46,12 +46,11 @@ example3 = gSplit (lift inc) id
 ex1 :: SPoly ('PProd 'PId 'PId)
 ex1 = FProd FId FId
 
-
 example4 :: (Int, Int) :=> (Int, Int)
 example4 = gfmap ex1 (lift inc)
 
 example5 :: (Int, Int) :=> (Int, Int)
-example5 = gSplit gSnd gFst
+example5 = snd &&& fst
 
 example51 :: (Int, Int) :=> (Int, Int)
 example51 = example5 . example5 . example5
@@ -70,8 +69,8 @@ double = mult . two
 example6 :: Either Int Int :=> Int
 example6 = gCase (lift inc) (lift double)
 
-example7 :: Either Int Int :=> Either Int Int
-example7 = gCase (gInl . lift inc) (gInr . lift double)
+example7 :: Either Int Int :=> Int
+example7 = gCase (lift inc) (lift inc) . gCase (gInl . lift inc) (gInr . lift double)
 
 example8 :: Either Int Int :=> Either Int Int
 example8 = gCase gInl gInr
