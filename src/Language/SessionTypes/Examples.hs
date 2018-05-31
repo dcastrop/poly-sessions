@@ -38,16 +38,16 @@ inc = add . one
     one = id &&& const 1
 
 example2 :: Int :=> Int
-example2 = example1 . lift inc . example1
+example2 = example1 . wrap inc . example1
 
 example3 :: Int :=> (Int, Int)
-example3 = gSplit (lift inc) id
+example3 = gSplit (wrap inc) id
 
 ex1 :: SPoly ('PProd 'PId 'PId)
 ex1 = FProd FId FId
 
 example4 :: (Int, Int) :=> (Int, Int)
-example4 = gfmap ex1 (lift inc)
+example4 = gfmap ex1 (wrap inc)
 
 example5 :: (Int, Int) :=> (Int, Int)
 example5 = snd &&& fst
@@ -67,10 +67,10 @@ double = mult . two
     two = id &&& const 2
 
 example6 :: Either Int Int :=> Int
-example6 = gCase (lift inc) (lift double)
+example6 = gCase (wrap inc) (wrap double)
 
 example7 :: Either Int Int :=> Int
-example7 = gCase (lift inc) (lift inc) . gCase (gInl . lift inc) (gInr . lift double)
+example7 = gCase (wrap inc) (wrap inc) . gCase (gInl . wrap inc) (gInr . wrap double)
 
 example8 :: Either Int Int :=> Either Int Int
 example8 = gCase gInl gInr
