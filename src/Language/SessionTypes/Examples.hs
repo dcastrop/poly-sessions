@@ -70,13 +70,13 @@ example6 :: Either Int Int :=> Int
 example6 = gCase (wrap inc) (wrap double)
 
 example7 :: Either Int Int :=> Int
-example7 = gCase (wrap inc) (wrap inc) . gCase (gInl . wrap inc) (gInr . wrap double)
+example7 = gCase (wrap double) (wrap inc) . gCase (inr . wrap inc) (inl . wrap double)
 
 example8 :: Either Int Int :=> Either Int Int
-example8 = gCase gInl gInr
+example8 = gCase gInr gInl
 
 example9 :: (Int, Int) :=> (Int, Int)
-example9 = gSplit id id . gFst
+example9 = gSplit (wrap inc) id . gFst
 --
 --
 -- -- RING

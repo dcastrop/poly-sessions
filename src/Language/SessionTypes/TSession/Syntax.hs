@@ -46,20 +46,20 @@ import Language.SessionTypes.Prefix.Global
 -- we introduce 'TagL' and 'TagR'. We treat them as equal:
 -- >>> SumR r1 r2 = TagL r1 = TagR r2.
 
-data TId
-  = TI Nat | TJ TId TRole
-  deriving (Eq, Ord, Show)
-
-data STId (k :: TId) where
-  STI :: SNat n -> STId ('TI n)
-  STJ :: STId n -> l ::: a -> STId ('TJ n l)
-
 data TRole
-  = RId TId
+  = RId Nat
   | RProd TRole TRole
-  | RSum  TRole TRole
-  | RAny
+  | RSumL TRole
+  | RSumR TRole
+  | RJoin TRole TRole
   deriving (Eq, Ord, Show)
+
+instance Polynomial TRole where
+  type (:*:) a b = 'RProd a b
+  type (:+:) a b = 'RJoin ('RSumL a) ('RSumR b)
+
+infixl 5 :\/:
+type (:\/:) a b = 'RJoin a b
 
 -- type family FstI (r :: TId) :: TId where
 --   FstI ('TI n) = 'TI n
@@ -68,85 +68,34 @@ data TRole
 type family FstR (r :: TRole) :: TRole where
   FstR ('RId n) = 'RId n
   FstR ('RProd a _) = a
-  FstR ('RSum a b) = 'RSum (FstR a) (FstR b)
-  FstR 'RAny = 'RAny
-
--- type family SndI (r :: TId) :: TId where
---   SndI ('TI n) = 'TI n
---   SndI ('TJ m r) = 'TJ (SndI m) (SndR r)
+  FstR ('RJoin a b) = 'RJoin (FstR a) (FstR b)
 
 type family SndR (r :: TRole) :: TRole where
   SndR ('RId n) = 'RId n
   SndR ('RProd _ b) = b
-  SndR ('RSum a b) = 'RSum (SndR a) (SndR b)
-  SndR 'RAny = 'RAny
-
-type family EqN (l :: Nat) (r :: Nat) :: Bool where
-  EqN 'Z 'Z = 'True
-  EqN 'Z ('S m) = 'False
-  EqN ('S n) 'Z = 'False
-  EqN ('S n) ('S m) = EqN n m
-
-type family And (b1 :: Bool) (b2 :: Bool) :: Bool where
-  And 'False _ = 'False
-  And _ 'False = 'False
-  And 'True 'True = 'True
-
-type family ITE (b :: Bool) (l :: k) (r :: k) = (res :: k) where
-  ITE 'True l _ = l
-  ITE 'False _ r = r
-
-type family Unify (t1 :: TRole) (t2 :: TRole) :: TRole where
-  Unify 'RAny r = r
-  Unify r 'RAny  = r
-  Unify ('RId n) ('RId m) = 'RId ('TJ n ('RId m))
-  Unify ('RId n) ('RProd l r) = 'RId ('TJ n ('RProd l r))
-  Unify ('RId n) ('RSum l r) = 'RId ('TJ n ('RSum l r))
-  Unify ('RProd l r) ('RId n) = 'RId ('TJ n ('RProd l r))
-  Unify ('RSum l r) ('RId n) = 'RId ('TJ n ('RSum l r))
-  Unify ('RProd l1 r1) ('RProd l2 r2) = 'RProd (Unify l1 l2) (Unify r1 r2)
-  Unify ('RSum l1 r1) ('RSum l2 r2) = 'RSum (Unify l1 l2) (Unify r1 r2)
+  SndR ('RJoin a b) = 'RJoin (SndR a) (SndR b)
 
 infix 5 :::
 
 data (:::) (t :: TRole) (a :: Type)  where
-  RI :: PType t -> STId n -> 'RId n ::: t
-  RP :: (Typeable a, Typeable b) => r1 ::: a -> r2 ::: b -> 'RProd r1 r2 ::: (a, b)
-  RS :: Typeable a => r1 ::: a -> r2 ::: b -> 'RSum r1 r2  ::: Either a b
-  RA :: Typeable a => 'RAny ::: a
-
-unify :: r1 ::: a -> r2 ::: a -> Unify r1 r2 ::: a
-unify RA x = x
-unify x RA = x
-unify (RI a i) x@RI{} = RI a (STJ i x)
-unify (RI a i) x@RP{} = RI a (STJ i x)
-unify (RI a i) x@RS{} = RI a (STJ i x)
-unify x@RP{} (RI a i) = RI a (STJ i x)
-unify x@RS{} (RI a i) = RI a (STJ i x)
-unify (RP l1 r1) (RP l2 r2) = RP (unify l1 l2) (unify r1 r2)
-unify (RS l1 r1) (RS l2 r2) = RS (unify l1 l2) (unify r1 r2)
-
-instance Polynomial TRole where
-  type (:*:) a b = 'RProd a b
-  type (:+:) a b = 'RSum a b
-
--- fstI :: (Typeable a, Typeable b) => STId (a,b) n -> STId a (FstI n)
--- fstI (STI n) = STI n
--- fstI (STJ n r) = STJ (fstI n) (fstR r)
+  RI :: PType t -> SNat n -> (:::) ('RId n) t
+  RP :: (Typeable a, Typeable b) => (:::) r1 a -> (:::) r2 b -> (:::) ('RProd r1 r2) (a, b)
+  RL ::(Typeable a, Typeable b) => PType b -> (:::) r1 a -> (:::) ('RSumL r1) (Either a b)
+  RR ::(Typeable a, Typeable b) => PType a -> (:::) r1 b -> (:::) ('RSumR r1) (Either a b)
+  RJ :: Typeable a => r1 ::: a -> r2 ::: a -> 'RJoin r1 r2  ::: a
 
 fstR :: (Typeable a, Typeable b) => r1 ::: (a,b) -> FstR r1 ::: a
 fstR (RI _ n) = RI PType n
 fstR (RP a _) = a
-fstR RA = RA
-
--- sndI :: (Typeable a, Typeable b) => STId (a,b) n -> STId a (FstI n)
--- sndI (STI n) = STI n
--- sndI (STJ n r) = STJ (fstI n) (fstR r)
+fstR (RJ a b) = RJ (fstR a) (fstR b)
 
 sndR :: (Typeable a, Typeable b) => r1 ::: (a,b) -> SndR r1 ::: b
 sndR (RI _ n) = RI PType n
 sndR (RP _ b) = b
-sndR RA = RA
+sndR (RJ a b) = RJ (sndR a) (sndR b)
+
+-- sndR (RS a b) = RS (sndR a) (sndR b)
+
 
 infix 9 :<:
 
@@ -158,22 +107,25 @@ data (:<:) :: TRole -> TRole -> Type where
   LTrans :: r1 :<: r2 -> r2 :<: r3 -> r1 :<: r3
   P1 :: r1 :<: 'RProd r1 r2
   P2 :: r2 :<: 'RProd r1 r2
-  S1 :: 'RSum r1 r0 :<: r0
-  S2 :: 'RSum r0 r1 :<: r0
+  S1 :: 'RSumL r0 :<: r0
+  S2 :: 'RSumR r1 :<: r1
+  J1 :: 'RJoin r r :<: r
+  J2 :: r :<: 'RJoin r r
 
   -- Congruence
   PC :: r1 :<: r3 -> r2 :<: r4 -> 'RProd r1 r2 :<: 'RProd r3 r4
-  SC :: r1 :<: r3 -> r2 :<: r4 -> 'RSum r1 r2 :<: 'RSum r3 r4
+  SC :: r1 :<: r3 -> r2 :<: r4 -> 'RJoin r1 r2 :<: 'RJoin r3 r4
 
 ltFstR :: r1 ::: (a, b) -> FstR r1 :<: r1
 ltFstR RI{} = LR
 ltFstR RP{} = P1
-ltFstR RA = LR
+ltFstR (RJ a b) = SC (ltFstR a) (ltFstR b)
+
 
 ltSndR :: r1 ::: (a, b) -> SndR r1 :<: r1
 ltSndR RI{} = LR
 ltSndR RP{} = P2
-ltSndR RA = LR
+ltSndR (RJ a b) = SC (ltSndR a) (ltSndR b)
 
 infixr 1 :==>
 
@@ -207,9 +159,15 @@ data (:==>) :: TRole -> TRole -> Type where
           -> r  :==> ro
           -> ri :==> ro
 
-  TBranch :: ri1 :==> ro1
-          -> ri2 :==> ro2
-          -> ri1 :+: ri2 :==> Unify ro1 ro2
+  TAlt :: ri1 :==> ro1
+       -> ri2 :==> ro2
+       -> ri1 :\/: ri2 :==> ro1 :\/: ro2
+
+  TBranchL :: ri1 :==> ro1
+           -> 'RSumL ri1 :==> ro1
+
+  TBranchR :: ri1 :==> ro1
+           -> 'RSumR ri1 :==> ro1
 
 {-
 injRI :: 'RId n :~: 'RId m -> n :~: m
@@ -275,23 +233,23 @@ class Monad m => RoleGen m where
   fresh :: m Nat
   keep  :: m a -> m a
 
--- joinR :: TRole -> TRole -> m Role
+  joinR :: TRole -> TRole -> m Role
 
 type STR = (Nat, Map TRole Role)
 
 instance RoleGen (State STR) where
   fresh = get >>= \(r, m) -> put (S r, m) >> return r
   keep c = get >>= \(i, _) -> c >>= \a -> get >>= \(_, m) -> put (i, m) >> return a
---   joinR (RId n) (RId m)
---     | n == m = return $ Rol $ natToInt n
---   joinR a b = get >>= \(r, m) ->
---       let rol = Rol $ natToInt r
---           newm = Map.insert a rol $ Map.insert b rol m
---       in maybe (put (S r, newm) *> return rol) return (lookupR m)
---     where
---       lookupR m = maybe (maybe Nothing Just $ Map.lookup b m)
---                         Just
---                         (Map.lookup a m)
+  joinR (RId n) (RId m)
+    | n == m = return $ Rol $ natToInt n
+  joinR a b = get >>= \(r, m) ->
+      let rol = Rol $ natToInt r
+          newm = Map.insert a rol $ Map.insert b rol m
+      in maybe (put (S r, newm) *> return rol) return (lookupR m)
+    where
+      lookupR m = maybe (maybe Nothing Just $ Map.lookup b m)
+                        Just
+                        (Map.lookup a m)
 
 data ECore = forall a b. ECore (a :-> b)
 
@@ -306,26 +264,36 @@ instance Pretty Ty where
 type Proto = GT Ty ECore
 
 data DPair b t1 where
-  DPair :: forall b t1 t2. t2 ::: b -> t1 :==> t2 -> DPair b t1
+  DPair :: forall b t1 t2. (:::) t2 b -> t1 :==> t2 -> DPair b t1
 
 data (:=>) a b = Gen {
   getGen :: forall t1 m. (Typeable a, Typeable b, RoleGen m)
-         =>  t1 ::: a -> m (DPair b t1)
+         =>  (:::) t1 a -> m (DPair b t1)
   }
 
 withFreshId :: RoleGen m => (forall i. SNat i -> m b) -> m b
 withFreshId f = fresh >>= \i -> withSomeSing i f
 
 withNewRole :: RoleGen m => PType a -> (forall r. 'RId r ::: a -> m b) -> m b
-withNewRole a f = withFreshId $ \i -> f (RI a (STI i))
+withNewRole a f = withFreshId $ \i -> f (RI a i)
+
+genFn :: (Typeable a, Typeable b)
+      => (forall r1 m. RoleGen m => r1 ::: a -> m (DPair b r1)) -> a :=> b
+genFn f = Gen $ \r ->
+  case r of
+    (RJ a b) -> do
+      DPair o1 p1 <- getGen (genFn f) a
+      DPair o2 p2 <- getGen (genFn f) b
+      return $ DPair (RJ o1 o2) (TAlt p1 p2)
+    _ -> f r
 
 gId :: forall a. Typeable a => a :=> a
-gId = Gen $ \r1 -> return $ DPair r1 $ TSkip r1 r1 LR id
+gId = genFn $ \r1 -> return $ DPair r1 $ TSkip r1 r1 LR id
 
 gComp :: forall a b c. (Typeable a, Typeable b, Typeable c)
       => b :=> c -> a :=> b -> a :=> c
 gComp f g
-  = Gen $ \r1 -> do
+  = genFn $ \r1 -> do
       DPair rt p1 <- getGen g r1
       DPair ro p2 <- getGen f rt
       return $ DPair ro $ TSeq rt p1 p2
@@ -336,24 +304,24 @@ instance Category (:=>) where
   (.) = gComp
 
 wrap :: forall a b. (Typeable a, Typeable b) => a :-> b -> a :=> b
-wrap f = Gen $ \ri -> withNewRole PType $ \ro -> return $ DPair ro $ TComm ri ro f
+wrap f = genFn $ \ri -> withNewRole PType $ \ro -> return $ DPair ro $ TComm ri ro f
 
 gFst :: forall a b. (Typeable a, Typeable b)
      => (a, b) :=> a
-gFst = Gen $ \r1 -> do
+gFst = genFn $ \r1 -> do
   let r2 = fstR r1
   return $ DPair r2 $ TSkip r1 r2 (ltFstR r1) fst
 
 gSnd :: forall a b. (Typeable a, Typeable b)
      => (a, b) :=> b
-gSnd = Gen $ \r1 -> do
+gSnd = genFn $ \r1 -> do
   let r2 = sndR r1
   return $ DPair r2 $ TSkip r1 r2 (ltSndR r1) snd
 
 gSplit :: forall a b c. (Typeable a, Typeable b, Typeable c)
        => a :=> b -> a :=> c -> a :=> (b, c)
 gSplit f g
-  = Gen $ \r1 -> do
+  = genFn $ \r1 -> do
       DPair o1 p1 <- getGen f r1
       DPair o2 p2 <- getGen g r1
       return $ DPair (RP o1 o2) (TSplit p1 p2)
@@ -361,6 +329,7 @@ gSplit f g
 gProd :: forall a b c d. (Typeable a, Typeable b, Typeable c, Typeable d)
       => a :=> b -> c :=> d -> (a, c) :=> (b, d)
 gProd f g = gSplit (f . gFst) (g . gSnd)
+
 
 instance Show a => Const a (:=>) where
   const x = wrap (const x)
@@ -375,40 +344,39 @@ instance Arrow (:=>) where
 
 gInl :: forall a b. (Typeable a, Typeable b)
      => a :=> Either a b
-gInl = Gen $ \r1 -> do
-         let o = RS r1 RA
-         return $ DPair o (TSkip r1 o S2 inl)
+gInl = genFn $ \r1 -> do
+         let o = RL PType r1
+         return $ DPair o (TSkip r1 o S1 inl)
 
 gInr :: forall a b. (Typeable a, Typeable b)
      => b :=> Either a b
-gInr = Gen $ \r1 -> do
-         let o = RS RA r1
-         return $ DPair o (TSkip r1 o S1 inr)
+gInr = genFn $ \r1 -> do
+         let o = RR PType r1
+         return $ DPair o (TSkip r1 o S2 inr)
 
-data APrefix r a b where
-  APrefix :: forall a b r t1 t2. t1 ::: a -> t2 ::: b -> r :==> t1 :+: t2 -> APrefix r a b
-
-ltSum :: n ::: a -> 'RSum n n :<: n
-ltSum _ = S1
-
-splitR :: (Typeable a, Typeable b)
-       => r ::: Either a b -> APrefix r a b
-splitR ri@RA = APrefix RA RA $ TSkip ri (RS RA RA) S1 id
-splitR ri@(RI _ n) =
-  let rl = RI PType n
-      rr = RI PType n
-  in APrefix rl rr $ TSkip ri (RS rl rr) S1 id
-splitR ri@(RS a b) = APrefix a b $ TSkip ri ri LR id
+ltSum :: SNat n -> ('RId n :+: 'RId n) :<: 'RId n
+ltSum _ = LTrans (SC S1 S2) J1
 
 gCase :: forall a b c. (Typeable a, Typeable b, Typeable c)
       => a :=> c -> b :=> c -> Either a b :=> c
-gCase f g = Gen $ \ri ->
-  case splitR ri of
-    APrefix l r c -> do
-      DPair o1 p1 <- getGen f l
-      DPair o2 p2 <- getGen g r
-      return $ DPair (unify o1 o2) $
-        TSeq (RS l r) c (TBranch p1 p2)
+gCase f g = genFn $ \ri ->
+   case ri of
+     RI _ n -> do
+       let rl  = RI PType n
+           rr  = RI PType n
+           ri' = RJ (RL PType rl) (RR PType rr)
+       DPair o p <- getGen (gCase f g) ri'
+       return $ DPair o $ TSeq ri' (TSkip ri ri' (ltSum n) id) p
+
+     RL PType r -> do
+       DPair o p <- getGen f r
+       return $ DPair o $ TBranchL p
+
+     RR PType r -> do
+       DPair o p <- getGen g r
+       return $ DPair o $ TBranchR p
+
+     RJ{} -> error "Panic! Impossible case"
 
 gSum :: forall a b c d. (Typeable a, Typeable b, Typeable c, Typeable d)
      => a :=> c -> b :=> d -> Either a b :=> Either c d
@@ -435,25 +403,21 @@ generate g = evalState pgen ((S Z, Map.empty)::STR)
     pgen    = do
       DPair _ p <- getGen g ri
       gen p
-    ri = RI PType (STI (sing :: SNat 'Z))
-
-toId :: STId a -> TId
-toId (STI n) = TI $ fromSing n
-toId (STJ n r) = TJ (toId n) (toSRole r)
+    ri = RI PType (sing :: SNat 'Z)
 
 toSRole :: r ::: a -> TRole
-toSRole (RI _ a) = RId $ toId a
-toSRole (RS a b) = RSum (toSRole a) (toSRole b)
+toSRole (RI _ a) = RId $ fromSing a
+toSRole (RJ a b) = RJoin (toSRole a) (toSRole b)
 toSRole (RP a b) = RProd (toSRole a) (toSRole b)
-toSRole  RA      = RAny
+toSRole (RL _ a) = RSumL (toSRole a)
+toSRole (RR _ a) = RSumR (toSRole a)
 
 flatten :: RoleGen m => TRole -> m [Role]
-flatten = undefined
--- flatten (RId   i) = return [Rol $ natToInt i]
--- flatten (RProd a b) = (++) <$> flatten a <*> flatten b
--- flatten (RSum r1 r2) = (:[]) <$> joinR r1 r2
--- flatten _ = error "Panic! Ill-formed protocol: Any can only occur \
---                   \ as part of RSum"
+flatten (RId   i) = return [Rol $ natToInt i]
+flatten (RProd a b) = (++) <$> flatten a <*> flatten b
+-- flatten (RJoin r1 r2) = (:[]) <$> joinR r1 r2
+flatten _ = error "Panic! Ill-formed protocol: Any can only occur \
+                  \ as part of RSum"
 
 getTypeOf :: forall t1 a. Typeable a => t1 ::: a -> TypeRep
 getTypeOf _ = typeRep (Proxy :: Proxy a)
@@ -477,33 +441,77 @@ gen (TSplit x1 x2)
     go GSkip g = g
     go g GSkip = g
     go g1 g2   = GComp Par g1 g2
+gen (TSeq o1 (TSeq o2 x1 x2) x3)
+  = gen $ TSeq o2 x1 (TSeq o1 x2 x3)
+gen (TSeq (RJ o1 o2) (TAlt x1 x2) (TAlt x3 x4))
+  = gen $ TAlt (TSeq o1 x1 x3) (TSeq o2 x2 x4)
 gen (TSeq _ x2 x3) = go <$> gen x2 <*> gen x3
   where
     go GSkip g = g
     go g GSkip = g
     go g1 g2   = GComp Seq g1 g2
-gen (TBranch x1 x2) = genBranch x1 x2
+gen (TAlt x1 x2) = genBranch x1 x2 -- error "Panic! Impossible choice protocol!"
+gen (TBranchL x1) = gen x1
+gen (TBranchR x1) = gen x1
 gen (TSkip _ _ _ _) = pure GSkip
 
-genBranch :: RoleGen m => r1 :==> r2 -> r3 :==> r4 -> m Proto
-genBranch = undefined
-
-{-
-
-data AnyRole t = forall a. Typeable a => AnyRole (t ::: a)
-
-inR :: r1 :==> r2 -> AnyRole r1
-inR (TComm r1 _ _) = AnyRole r1
-inR (TDistr r1 _ _) = AnyRole r1
+inR :: r1 :==> r2 -> TRole
+inR (TComm r1 _ _) = toSRole r1
+inR (TDistr r1 _ _) = toSRole r1
 inR (TSplit r1 _) = inR r1
 inR (TSeq _ r1 _) = inR r1
-inR (TBranch r1 r2)
+inR (TBranchL r1) = inR r1
+inR (TBranchR r1) = inR r1
+inR (TAlt r1 r2)
   = case (inR r1, inR r2) of
-      (AnyRole a, AnyRole b) -> AnyRole (RS (TL PType a) (TR PType b))
-inR (TSkip r _ _ _) = AnyRole r
+      (a, b) -> RJoin a b
+inR (TSkip r _ _ _) = toSRole r
+
+data AnyType where
+  ATy :: Typeable a => PType a -> AnyType
+
+rolety :: Typeable a => r1 ::: a -> PType a
+rolety _ = PType
+
+inTy :: r1 :==> r2 -> AnyType
+inTy (TComm r1 _ _) = ATy (rolety r1)
+inTy (TDistr r1 _ _) = ATy (rolety r1)
+inTy (TSplit r1 _) = inTy r1
+inTy (TSeq _ r1 _) = inTy r1
+inTy (TAlt r1 _) = inTy r1
+inTy (TBranchL r1) = inTy r1
+inTy (TBranchR r1) = inTy r1
+inTy (TSkip r _ _ _) = ATy (rolety r)
 
 sumt :: PType a -> PType b -> PType (Either a b)
 sumt PType PType = PType
+
+
+genBranch :: RoleGen m => r1 :==> r2 -> r3 :==> r4 -> m Proto
+genBranch x1 x2
+  = br <$> joinR t1 t2 <*> flatten t1 <*> flatten t2 <*> gen x1 <*> gen x2
+  where
+    t1 = inR x1
+    t2 = inR x2
+    ty1 = inTy x1
+    ty2 = inTy x2
+    br _ _ _ GSkip GSkip
+      = GSkip
+    br i i1 i2 a b
+      = Choice i $ addAlt 0 (seqm (msg i i1 ty1) a)
+                 $ addAlt 1 (seqm (msg i i2 ty2) b)
+                 $ emptyAlt
+    seqm GSkip = id
+    seqm a     = GComp Seq a
+    msg :: Role -> [Role] -> AnyType -> Proto
+    msg f t pt
+      | [f] == t = GSkip
+      | otherwise =
+        case pt of
+          ATy (_ :: PType a) ->
+            Comm $ Msg [f] t (Ty $ typeRep (Proxy :: Proxy a)) (ECore (id :: a :-> a))
+
+
 
 -- test = TSeq (RS (RI a r) (RI b s))
 --             (TComm (RI a t) (TL (RI a r)) Inl)
@@ -515,33 +523,3 @@ sumt PType PType = PType
 --     r = sing :: SNat 0
 --     s = sing :: SNat 1
 --     t = sing :: SNat 2
-
-
--- -- Sums:
-
-
-
-
-genBranch x1 x2
-  = case (inR x1, inR x2) of
-      (AnyRole r1, AnyRole r2) ->
-        let t1 = toSRole r1
-            t2 = toSRole r2
-        in br r1 r2
-              <$> joinR t1 t2
-              <*> flatten t1 <*> flatten t2
-              <*> gen x1 <*> gen x2
-  where
-    br _ _ _ _ _ GSkip GSkip
-      = GSkip
-    br r1 r2 i i1 i2 a b
-      = Choice i $ addAlt 0 (seqm (msg i i1 r1) a)
-                 $ addAlt 1 (seqm (msg i i2 r2) b)
-                 $ emptyAlt
-    seqm GSkip = id
-    seqm a     = GComp Seq a
-    msg :: forall t a. Typeable a => Role -> [Role] -> t ::: a -> Proto
-    msg f t pt
-      | [f] == t = GSkip
-      | otherwise = Comm $ Msg [f] t (Ty $ getTypeOf pt) (ECore (id :: a :-> a))
--}
