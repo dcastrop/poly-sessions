@@ -3,6 +3,7 @@
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE TypeOperators #-}
+{-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 module Language.SessionTypes.Examples
 where
@@ -10,7 +11,9 @@ where
 import Prelude hiding ( (.), id, const, fst, snd )
 import Control.Constrained.Arrow
 import Control.Constrained.Category
+import Data.Kind
 import Data.Typeable
+import Data.Singletons
 import Data.Text.Prettyprint.Doc ( pretty )
 
 import Language.FPoly
@@ -47,7 +50,7 @@ ex1 :: SPoly ('PProd 'PId 'PId)
 ex1 = FProd FId FId
 
 example4 :: (Int, Int) :=> (Int, Int)
-example4 = gfmap ex1 (wrap inc)
+example4 = pmap ex1 (wrap inc)
 
 example5 :: (Int, Int) :=> (Int, Int)
 example5 = snd &&& fst
@@ -83,68 +86,49 @@ example8 = gCase gInr gInl
 
 example9 :: (Int, Int) :=> (Int, Int)
 example9 = gSplit (wrap inc) id . gFst
---
---
--- -- RING
--- -- Poly Level
--- type V3 = 'PProd 'PId ('PProd 'PId 'PId)
---
--- split3 :: (SingI a, SingI b)
---        => CCore (a ':-> b)
---        -> CCore (a ':-> b)
---        -> CCore (a ':-> b)
---        -> CCore (a ':-> V3 :@: b)
--- split3 f g h = Split f (Split g h)
---
--- prj1 :: SingI a => CCore (V3 :@: a ':-> a)
--- prj1 = Fst
---
--- prj2 :: SingI a => CCore (V3 :@: a ':-> a)
--- prj2 = Fst `Comp` Snd
---
--- prj3 :: SingI a => CCore (V3 :@: a ':-> a)
--- prj3 = Snd `Comp` Snd
---
--- permute :: (SingI a, SingI b)
---         => CCore ((V3 :@: 'TProd a b) ':-> (V3 :@: 'TProd a b))
--- permute = split3 (Split (Fst `Comp` prj1) (Snd `Comp` prj3))
---                  (Split (Fst `Comp` prj2) (Snd `Comp` prj1))
---                  (Split (Fst `Comp` prj3) (Snd `Comp` prj2))
---
--- ex1Poly :: forall (a :: Type TyPrim) b. (SingI a, SingI b)
---         => CCore (a ':-> b)
---         -> CCore ('TProd a b ':-> a)
---         -> CCore (V3 :@: a ':-> V3 :@: a)
--- ex1Poly f g =
---     Fmap (sing :: Sing V3) Fst `Comp`
---     iter 2 Comp Id (Fmap (sing :: Sing V3) (Split g Snd) `Comp` permute) `Comp`
---     Fmap (sing :: Sing V3) (Split Id f)
---
--- -- Session Level
---
--- gsplit3 :: (SingI a, SingI b)
---         => a :=> b -> a :=> b -> a :=> b -> a :=> (V3 :@: b)
--- gsplit3 f g h = gsplit f (gsplit g h)
---
--- gpermute :: (SingI a, SingI b)
---         => ((V3 :@: 'TProd a b) :=> (V3 :@: 'TProd a b))
--- gpermute =
---     gsplit3 (gsplit (lift Fst `gcomp` lift prj1) (lift Snd `gcomp` lift prj3))
---             (gsplit (lift Fst `gcomp` lift prj2) (lift Snd `gcomp` lift prj1))
---             (gsplit (lift Fst `gcomp` lift prj3) (lift Snd `gcomp` lift prj2))
---
--- ex1Session :: forall (a :: Type TyPrim) b. (SingI a, SingI b)
---         => CCore (a ':-> b)
---         -> CCore ('TProd a b ':-> a)
---         -> (V3 :@: a) :=> (V3 :@: a)
--- ex1Session f g =
---     gfmap (sing :: Sing V3) (lift Fst) `gcomp`
---     iter 2 gcomp (lift Id)
---       (gfmap (sing :: Sing V3)
---              (gsplit (lift g) (lift Snd))
---        `gcomp` gpermute) `gcomp`
---     -- lift (Fmap (sing :: Sing V3) (Split Id f))
---     gfmap (sing :: Sing V3) (gsplit (lift Id) (lift f))
---
--- ex1Proto :: (V3 :@: CInt) :=> (V3 :@: CInt)
--- ex1Proto = ex1Session Id (Prim Plus)
+
+-- RING
+-- Poly Level
+type family V3 :: Poly Type where
+  V3 = 'PProd 'PId ('PProd 'PId 'PId)
+
+split3 :: (ArrowChoice t, C t a, C t b, C t (b, b))
+       => t a b
+       -> t a b
+       -> t a b
+       -> t a (V3 :@: b)
+split3 f g h = f &&& (g &&& h)
+
+prj1 :: (ArrowChoice t, C t a, C t (a,a))
+     => t (V3 :@: a) a
+prj1 = fst
+
+prj2 :: (ArrowChoice t, C t a, C t (a,a), C t (a, (a,a)))
+     => t (V3 :@: a) a
+prj2 = fst . snd
+
+prj3 :: (ArrowChoice t, C t a, C t (a,a), C t (a,  (a,a)))
+     => t (V3 :@: a) a
+prj3 = snd . snd
+
+permute :: ( ArrowChoice t, C t a, C t b, C t (a, b)
+           , C t ((a,b),(a,b)), C t (V3 :@: (a,b)))
+        => t (V3 :@: (a, b)) (V3 :@: (a, b))
+permute = split3 ((fst . prj1) &&& (snd . prj3))
+                 ((fst . prj2) &&& (snd . prj1))
+                 ((fst . prj3) &&& (snd . prj2))
+
+ex1Poly :: ( ArrowChoice t, C t a, C t b
+           , C t (a, b), C t ((a, b), (a, b)), C t (a, a)
+           , C t (a, (a, a))
+           , C t ((a, b), ((a, b), (a, b))) )
+        => t a b
+        -> t (a, b) a
+        -> t (V3 :@: a) (V3 :@: a)
+ex1Poly f g =
+    pmap (sing :: Sing V3) fst .
+    iter 2 (.) id (pmap (sing :: Sing V3) (g &&& snd) . permute) .
+    pmap (sing :: Sing V3) (id &&& f)
+
+ex1Proto :: (V3 :@: Int) :=> (V3 :@: Int)
+ex1Proto = ex1Poly id (arr "(+)" (uncurry (+)))

@@ -312,7 +312,7 @@ gComp f g
       return $ DPair ro $ TSeq rt p1 p2
 
 instance Category (:=>) where
-  type C (:=>) a = Typeable a
+  type C (:=>) = Typeable
   id = gId
   (.) = gComp
 
@@ -348,6 +348,7 @@ instance Show a => Const a (:=>) where
   const x = wrap (const x)
 
 instance Arrow (:=>) where
+  pairDict = CDict
   arr s f = wrap (arr s f)
   fst = gFst
   snd = gSnd
@@ -395,19 +396,20 @@ gSum :: forall a b c d. (Typeable a, Typeable b, Typeable c, Typeable d)
 gSum f g = gCase (gInl . f) (gInr . g)
 
 instance ArrowChoice (:=>) where
+  eitherDict = CDict
   inl = gInl
   inr = gInr
   (+++) = gSum
   (|||) = gCase
 
-gfmap :: forall a b f. (IsC Typeable f a, IsC Typeable f b)
-      => SPoly f
-      -> (:=>) a b
-      -> (:=>) (f :@: a) (f :@: b)
-gfmap (FK _) _ = id
-gfmap FId g = g
-gfmap (FProd p1 p2) f = gfmap p1 f *** gfmap p2 f
-gfmap (FSum p1 p2) f  = gfmap p1 f +++ gfmap p2 f
+-- gfmap :: forall a b f. (IsC Typeable f a, IsC Typeable f b)
+--       => SPoly f
+--       -> (:=>) a b
+--       -> (:=>) (f :@: a) (f :@: b)
+-- gfmap (FK _) _ = id
+-- gfmap FId g = g
+-- gfmap (FProd p1 p2) f = gfmap p1 f *** gfmap p2 f
+-- gfmap (FSum p1 p2) f  = gfmap p1 f +++ gfmap p2 f
 
 generate :: forall a b. (Typeable a, Typeable b) => a :=> b -> Proto
 generate g = evalState pcgen ((S Z, Map.empty)::STR)
