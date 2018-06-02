@@ -72,6 +72,12 @@ example6 = gCase (wrap inc) (wrap double)
 example7 :: Either Int Int :=> Int
 example7 = gCase (wrap double) (wrap inc) . gCase (inr . wrap inc) (inl . wrap double)
 
+-- example71 :: (Either Int Int, Either Int Int) :=> (Int, Int)
+example71 = go . ((wrap inc ||| wrap double) *** (wrap double ||| wrap inc))
+  where
+    go :: (Int, Int) :=> Int
+    go = arr "(+)" (uncurry (+))
+
 example8 :: Either Int Int :=> Either Int Int
 example8 = gCase gInr gInl
 

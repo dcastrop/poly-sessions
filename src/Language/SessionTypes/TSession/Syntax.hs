@@ -1,13 +1,11 @@
 {-# OPTIONS_GHC -fno-warn-unused-imports #-}
 {-# LANGUAGE UndecidableInstances #-}
 {-# LANGUAGE TupleSections #-}
-{-# LANGUAGE ViewPatterns #-}
 {-# LANGUAGE EmptyCase #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE TypeFamilyDependencies #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE RankNTypes #-}
-{-# LANGUAGE FunctionalDependencies #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE ScopedTypeVariables #-}
@@ -25,12 +23,14 @@ import Prelude hiding ( (.), id, fst, snd, const )
 
 import Data.Kind
 
+import Data.List ( nub )
 import Data.Singletons
 import Data.Singletons.Decide
 import Data.Type.Natural
 import Data.Typeable
 import Data.Map ( Map )
 import qualified Data.Map as Map
+import Control.Applicative ( (<|>) )
 import Control.Constrained.Category
 import Control.Constrained.Arrow
 import Control.Monad.State.Strict hiding ( lift )
@@ -38,8 +38,8 @@ import Data.Text.Prettyprint.Doc ( Pretty(..) )
 
 import Language.FPoly.Core
 import Language.FPoly.Type
-import Language.SessionTypes.Common ( Role(..), addAlt, emptyAlt )
-import Language.SessionTypes.Prefix.Global
+import Language.SessionTypes.Common ( Role(..), addAlt, emptyAlt, altMap )
+import Language.SessionTypes.Global
 
 -- | Type of roles: either a sum of roles, product of roles, or a constant
 -- sometimes we do not know the other role in the sum of roles. For those cases,
@@ -111,6 +111,9 @@ data (:<:) :: TRole -> TRole -> Type where
   S2 :: 'RSumR r1 :<: r1
   J1 :: 'RJoin r r :<: r
   J2 :: r :<: 'RJoin r r
+  -- (1 + 1) * (2 * 2) ~~~ (1 * 2 + 1 * 2) + (1 * 2 + 1 * 2)
+  LD1 :: 'RJoin ('RProd a c) ('RProd b c) :<: 'RProd ('RJoin a b) c
+  LD2 :: 'RJoin ('RProd a b) ('RProd a c) :<: 'RProd a ('RJoin b c)
 
   -- Congruence
   PC :: r1 :<: r3 -> r2 :<: r4 -> 'RProd r1 r2 :<: 'RProd r3 r4
@@ -242,14 +245,16 @@ instance RoleGen (State STR) where
   keep c = get >>= \(i, _) -> c >>= \a -> get >>= \(_, m) -> put (i, m) >> return a
   joinR (RId n) (RId m)
     | n == m = return $ Rol $ natToInt n
+  joinR (RSumL a) b = joinR a b
+  joinR (RSumR a) b = joinR a b
+  joinR a (RSumL b) = joinR a b
+  joinR a (RSumR b) = joinR a b
   joinR a b = get >>= \(r, m) ->
       let rol = Rol $ natToInt r
           newm = Map.insert a rol $ Map.insert b rol m
       in maybe (put (S r, newm) *> return rol) return (lookupR m)
     where
-      lookupR m = maybe (maybe Nothing Just $ Map.lookup b m)
-                        Just
-                        (Map.lookup a m)
+      lookupR m = Map.lookup a m <|> Map.lookup b m
 
 data ECore = forall a b. ECore (a :-> b)
 
@@ -261,7 +266,7 @@ newtype Ty = Ty TypeRep
 instance Pretty Ty where
   pretty (Ty t) = pretty $ show t
 
-type Proto = GT Ty ECore
+type Proto = GT String Ty ECore
 
 data DPair b t1 where
   DPair :: forall b t1 t2. (:::) t2 b -> t1 :==> t2 -> DPair b t1
@@ -281,8 +286,16 @@ genFn :: (Typeable a, Typeable b)
       => (forall r1 m. RoleGen m => r1 ::: a -> m (DPair b r1)) -> a :=> b
 genFn f = Gen $ \r ->
   case r of
-    (RJ a b) -> do
-      DPair o1 p1 <- getGen (genFn f) a
+--     RP (RJ a b) c -> do
+--       let r' = (RJ (RP a c) (RP b c))
+--       DPair o1 p1 <- getGen (genFn f) r'
+--       return $ DPair o1 $ TSeq r' (TSkip r r' LD1 id) p1
+--     RP a (RJ b c) -> do
+--       let r' = (RJ (RP a b) (RP a c))
+--       DPair o1 p1 <- getGen (genFn f) r'
+--       return $ DPair o1 $ TSeq r' (TSkip r r' LD2 id) p1
+    RJ a b -> do
+      DPair o1 p1 <- keep $ getGen (genFn f) a
       DPair o2 p2 <- getGen (genFn f) b
       return $ DPair (RJ o1 o2) (TAlt p1 p2)
     _ -> f r
@@ -341,7 +354,6 @@ instance Arrow (:=>) where
   (***) = gProd
   (&&&) = gSplit
 
-
 gInl :: forall a b. (Typeable a, Typeable b)
      => a :=> Either a b
 gInl = genFn $ \r1 -> do
@@ -398,11 +410,11 @@ gfmap (FProd p1 p2) f = gfmap p1 f *** gfmap p2 f
 gfmap (FSum p1 p2) f  = gfmap p1 f +++ gfmap p2 f
 
 generate :: forall a b. (Typeable a, Typeable b) => a :=> b -> Proto
-generate g = evalState pgen ((S Z, Map.empty)::STR)
+generate g = evalState pcgen ((S Z, Map.empty)::STR)
   where
-    pgen    = do
+    pcgen    = do
       DPair _ p <- getGen g ri
-      gen p
+      cgen p <*> pure GEnd
     ri = RI PType (sing :: SNat 'Z)
 
 toSRole :: r ::: a -> TRole
@@ -415,45 +427,102 @@ toSRole (RR _ a) = RSumR (toSRole a)
 flatten :: RoleGen m => TRole -> m [Role]
 flatten (RId   i) = return [Rol $ natToInt i]
 flatten (RProd a b) = (++) <$> flatten a <*> flatten b
--- flatten (RJoin r1 r2) = (:[]) <$> joinR r1 r2
-flatten _ = error "Panic! Ill-formed protocol: Any can only occur \
-                  \ as part of RSum"
+flatten (RJoin r1 r2) = (:[]) <$> joinR r1 r2
+flatten r = error $ "Panic! Ill-formed protocol: "
+                  ++ show r
+                  ++ " cannot occur during role flattening"
 
 getTypeOf :: forall t1 a. Typeable a => t1 ::: a -> TypeRep
 getTypeOf _ = typeRep (Proxy :: Proxy a)
 
-gen :: RoleGen m => r1 :==> r2 -> m Proto
-gen (TComm ri ro f)
+step :: r1 :==> r2 -> Maybe (r1 :==> r2)
+step (TSeq o1 (TSeq o2 x1 x2) x3)
+  = Just (TSeq o2 x1 (TSeq o1 x2 x3))
+step (TSeq (RJ o1 o2) (TAlt x1 x2) (TAlt x3 x4))
+  = Just (TAlt (TSeq o1 x1 x3) (TSeq o2 x2 x4))
+step (TSeq o (TBranchL x1) x2)
+  = Just $ TBranchL (TSeq o x1 x2)
+step (TSeq o (TBranchR x1) x2)
+  = Just $ TBranchR (TSeq o x1 x2)
+step (TSeq o x1 x2)
+  | Just x1' <- step x1 = Just $ TSeq o x1' x2
+  | Just x2' <- step x2 = Just $ TSeq o x1 x2'
+--- I have to turn a r1 + r2 * r3 + r4 to (r1 * r3) + (r1 * r4) + ...
+-- step (TSplit (TAlt x1 x2) (TAlt x3 x4))
+--    = Just $
+--        TAlt (TAlt (TSplit x1 x3) (TSplit x1 x4))
+--             (TAlt (TSplit x2 x3) (TSplit x2 x4)
+step (TSplit x1 x2)
+  | Just x1' <- step x1 = Just $ TSplit x1' x2
+  | Just x2' <- step x2 = Just $ TSplit x1 x2'
+step (TAlt x1 x2)
+  | Just x1' <- step x1 = Just $ TAlt x1' x2
+  | Just x2' <- step x2 = Just $ TAlt x1 x2'
+step (TBranchL x1)
+  | Just x1' <- step x1 = Just $ TBranchL x1'
+step (TBranchR x1)
+  | Just x1' <- step x1 = Just $ TBranchR x1'
+step _ = Nothing
+
+getRoles :: Proto -> [Role]
+getRoles (Choice r rs alts) = r:rs ++ concatMap getRoles lalts
+  where
+    lalts = map snd . Map.toList . altMap $ alts
+getRoles (Comm (Msg r1 r2 _ _) c)= r1 ++ r2 ++ getRoles c
+getRoles (GRec _ c) = getRoles c
+getRoles _ = []
+
+normalise :: r1 :==> r2 -> r1 :==> r2
+normalise p | Just p' <- step p = go p'
+            | otherwise = error "Nope"
+  where
+    go c | Just c' <- step c = go c'
+         | otherwise = c
+
+gen :: RoleGen m => r1 :==> r2 -> m (Proto -> Proto)
+gen = cgen . normalise
+
+cgen :: RoleGen m => r1 :==> r2 -> m (Proto -> Proto)
+cgen (TComm ri ro f)
   = fmap Comm $
     Msg <$> flatten (toSRole ri)
         <*> flatten (toSRole ro)
         <*> pure (Ty $ getTypeOf ri)
         <*> pure (ECore f)
-gen (TDistr ri ro f)
+cgen (TDistr ri ro f)
   = fmap Comm $
     Msg <$> flatten (toSRole ri)
         <*> flatten (toSRole ro)
         <*> pure (Ty $ getTypeOf ri)
         <*> pure (ECore f)
-gen (TSplit x1 x2)
-  = go <$> gen x1 <*> gen x2
+cgen (TSplit x1 x2)
+  = (.) <$> cgen x1 <*> cgen x2
+cgen (TSeq o1 (TSeq o2 x1 x2) x3)
+  = cgen $ TSeq o2 x1 (TSeq o1 x2 x3)
+cgen (TSeq (RJ o1 o2) (TAlt x1 x2) (TAlt x3 x4))
+  = cgen $ TAlt (TSeq o1 x1 x3) (TSeq o2 x2 x4)
+cgen (TSeq o (TBranchL x) y) = cgen $ TBranchL (TSeq o x y)
+cgen (TSeq o (TBranchR x) y) = cgen $ TBranchR (TSeq o x y)
+cgen (TSeq _ x2 x3) = (.) <$> cgen x2 <*> cgen x3
+--   where
+--     go GSkip g = g
+--     go g GSkip = g
+--     go g1 g2   = GComp Seq g1 g2
+cgen (TAlt x1 x2) = do
+  a <- cgen x1
+  b <- cgen x2
+  t <- joinR t1 t2
+  return $ \c ->
+      let ac = a c
+          bc = b c
+          rs = filter (/= t) $ nub $ getRoles ac ++ getRoles bc
+      in Choice t rs (addAlt 0 ac $ addAlt 1 bc emptyAlt)
   where
-    go GSkip g = g
-    go g GSkip = g
-    go g1 g2   = GComp Par g1 g2
-gen (TSeq o1 (TSeq o2 x1 x2) x3)
-  = gen $ TSeq o2 x1 (TSeq o1 x2 x3)
-gen (TSeq (RJ o1 o2) (TAlt x1 x2) (TAlt x3 x4))
-  = gen $ TAlt (TSeq o1 x1 x3) (TSeq o2 x2 x4)
-gen (TSeq _ x2 x3) = go <$> gen x2 <*> gen x3
-  where
-    go GSkip g = g
-    go g GSkip = g
-    go g1 g2   = GComp Seq g1 g2
-gen (TAlt x1 x2) = genBranch x1 x2 -- error "Panic! Impossible choice protocol!"
-gen (TBranchL x1) = gen x1
-gen (TBranchR x1) = gen x1
-gen (TSkip _ _ _ _) = pure GSkip
+    t1 = inR x1
+    t2 = inR x1
+cgen (TBranchL x1) = cgen x1
+cgen (TBranchR x1) = cgen x1
+cgen TSkip{} = pure id
 
 inR :: r1 :==> r2 -> TRole
 inR (TComm r1 _ _) = toSRole r1
@@ -485,41 +554,3 @@ inTy (TSkip r _ _ _) = ATy (rolety r)
 
 sumt :: PType a -> PType b -> PType (Either a b)
 sumt PType PType = PType
-
-
-genBranch :: RoleGen m => r1 :==> r2 -> r3 :==> r4 -> m Proto
-genBranch x1 x2
-  = br <$> joinR t1 t2 <*> flatten t1 <*> flatten t2 <*> gen x1 <*> gen x2
-  where
-    t1 = inR x1
-    t2 = inR x2
-    ty1 = inTy x1
-    ty2 = inTy x2
-    br _ _ _ GSkip GSkip
-      = GSkip
-    br i i1 i2 a b
-      = Choice i $ addAlt 0 (seqm (msg i i1 ty1) a)
-                 $ addAlt 1 (seqm (msg i i2 ty2) b)
-                 $ emptyAlt
-    seqm GSkip = id
-    seqm a     = GComp Seq a
-    msg :: Role -> [Role] -> AnyType -> Proto
-    msg f t pt
-      | [f] == t = GSkip
-      | otherwise =
-        case pt of
-          ATy (_ :: PType a) ->
-            Comm $ Msg [f] t (Ty $ typeRep (Proxy :: Proxy a)) (ECore (id :: a :-> a))
-
-
-
--- test = TSeq (RS (RI a r) (RI b s))
---             (TComm (RI a t) (TL (RI a r)) Inl)
---             (TBranch (TComm (RI a r) (RI a t) Id)
---                      (TComm (RI b s) (RI a t) (Const Unit)))
---   where
---     a = STUnit
---     b = STPrim SInt32
---     r = sing :: SNat 0
---     s = sing :: SNat 1
---     t = sing :: SNat 2
