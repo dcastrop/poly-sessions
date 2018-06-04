@@ -13,14 +13,18 @@ import Control.Constrained.Arrow
 import Control.Constrained.Category
 import Data.Kind
 import Data.Typeable
+import Data.Type.Natural
 import Data.Singletons
 import Data.Text.Prettyprint.Doc ( pretty )
 
 import Language.FPoly
 import Language.SessionTypes.TSession.Syntax
 
-testGen :: (Typeable a, Typeable b) => a :=> b -> IO ()
-testGen g = putStrLn $ show $ pretty $ generate g
+testGenR :: (Typeable a, Typeable b) => a :=> b -> IO ()
+testGenR g = print $ pretty $ generateR g
+
+testGen :: (Typeable a, Typeable b) => r ::: a -> a :=> b -> IO ()
+testGen ri g = print $ pretty $ generate ri g
 
 iter :: Int -> (a -> a -> a) -> a -> a -> a
 iter i c idf f = go i
@@ -132,3 +136,8 @@ ex1Poly f g =
 
 ex1Proto :: (V3 :@: Int) :=> (V3 :@: Int)
 ex1Proto = ex1Poly id (arr "(+)" (uncurry (+)))
+
+genV3 :: IO ()
+genV3 = testGen
+    (RP (RI PType SZ) (RP (RI PType (SS SZ)) (RI PType (SS (SS SZ)))))
+    ex1Proto
