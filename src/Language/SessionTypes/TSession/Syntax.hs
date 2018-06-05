@@ -126,12 +126,12 @@ sndR (RP _ b) = b
 sndR (RJ a b) = RJ (sndR a) (sndR b)
 
 projR :: (Typeable a)
-      => SNat n -> r1 ::: Vec ('S n) a -> Proj n r1 ::: a
+      => Leq n m -> r1 ::: Vec ('S m) a -> Proj n r1 ::: a
 projR _ (RI _ n) = RI PType n
 projR n (RJ a b) = RJ (projR n a) (projR n b)
-projR SZ (RVS a _) = a
-projR SZ (RVZ a) = a
-projR (SS n) (RVS _ b) = projR n b
+projR ZeroLeq{} (RVS a _) = a
+projR ZeroLeq{} (RVZ a) = a
+projR (SuccLeqSucc n) (RVS _ b) = projR n b
 
 -- sndR (RS a b) = RS (sndR a) (sndR b)
 
@@ -173,11 +173,11 @@ ltSndR RP{} = PR (EThere EHere)
 ltSndR (RJ a b) = SC (ltSndR a) (ltSndR b)
 
 --- XXX: wrong! n <= m
-ltProjR :: SNat n -> r1 ::: Vec ('S n) a -> Proj n r1 :<: r1
+ltProjR :: Leq n m -> r1 ::: Vec ('S m) a -> Proj n r1 :<: r1
 ltProjR _ RI{} = LR
-ltProjR SZ (RVS _ _) = PR EHere
-ltProjR SZ (RVZ _) = PR EHere
-ltProjR (SS n) (RVS _ b) = case ltProjR n b of
+ltProjR ZeroLeq{} (RVS _ _) = PR EHere
+ltProjR ZeroLeq{} (RVZ _) = PR EHere
+ltProjR (SuccLeqSucc n) (RVS _ b) = case ltProjR n b of
                               PR t -> PR (EThere t)
                               _ -> error "Panic! Impossible"
 ltProjR n (RJ a b) = SC (ltProjR n a) (ltProjR n b)
@@ -389,20 +389,20 @@ instance ArrowChoice (:=>) where
   (+++) = gSum
   (|||) = gCase
 
-gGet :: forall a n. (Typeable a, SingI n, Typeable n)
-     => Idx n -> Vec ('S n) a :=> a
+gGet :: forall a n m. (Typeable a, SingI n, Typeable n, Typeable m, SingI n)
+     => Leq n m -> Vec ('S m) a :=> a
 gGet i = genFn $ \r1 ->  do
-  let r2 = projR n r1
-      (n :: SNat n) = sing
-  return $ DPair r2 $ TSkip r1 r2 (ltProjR n r1) (vproj i)
+  let r2 = projR i r1
+  return $ DPair r2 $ TSkip r1 r2 (ltProjR i r1) (vproj i)
 
-gVgen :: forall a b n. (Typeable a, Typeable b, Typeable n, SingI n)
-      => Idx n -> (Word32, a) :=> b -> a :=> Vec n b
-gVgen (Idx w) p = genFn $ go w (sing :: Sing n)
-  where
-    go 1 ri = do
-      DPair ro g <- getGen p ri
-      return $ DPair (RVZ ro) $ TSplit (LZ g)
+data AnyRoleI a r where
+  AnyRoleI :: forall a n r. 'RId n ::: a -> r :==> 'RId n -> AnyRoleI a r
+
+-- gVgen :: forall a b n. (Typeable a, Typeable b, Typeable n, SingI n)
+--       => SNat n -> (Int -> a :=> b) -> a :=> Vec n b
+-- gVgen (SS SZ) g = \ri -> withFreshId $ \i -> do
+--   let ro1 = RI PType i
+--   DPair
 
 generate :: forall a b r. (Typeable a, Typeable b)
          => r ::: a ->  a :=> b -> Proto
