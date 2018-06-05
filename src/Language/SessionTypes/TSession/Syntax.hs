@@ -21,6 +21,8 @@ where
 
 import Prelude hiding ( (.), id, fst, snd, const )
 
+import Debug.Trace ( trace )
+
 import Data.Kind
 
 import Data.List ( nub )
@@ -92,8 +94,7 @@ data (:::) (t :: TRole) (a :: Type)  where
      -> (:::) ('RProd '[r1, r2]) (a, b)
 
   RVZ :: (Typeable a)
-      => (:::) r1 a
-      -> (:::) ('RProd '[r1]) (Vec ('S 'Z) a)
+      => (:::) ('RProd '[]) (Vec 'Z a)
 
   RVS :: (Typeable a, Typeable n)
       => (:::) r1 a
@@ -130,7 +131,6 @@ projR :: (Typeable a)
 projR _ (RI _ n) = RI PType n
 projR n (RJ a b) = RJ (projR n a) (projR n b)
 projR ZeroLeq{} (RVS a _) = a
-projR ZeroLeq{} (RVZ a) = a
 projR (SuccLeqSucc n) (RVS _ b) = projR n b
 
 -- sndR (RS a b) = RS (sndR a) (sndR b)
@@ -176,7 +176,6 @@ ltSndR (RJ a b) = SC (ltSndR a) (ltSndR b)
 ltProjR :: Leq n m -> r1 ::: Vec ('S m) a -> Proj n r1 :<: r1
 ltProjR _ RI{} = LR
 ltProjR ZeroLeq{} (RVS _ _) = PR EHere
-ltProjR ZeroLeq{} (RVZ _) = PR EHere
 ltProjR (SuccLeqSucc n) (RVS _ b) = case ltProjR n b of
                               PR t -> PR (EThere t)
                               _ -> error "Panic! Impossible"
@@ -185,7 +184,7 @@ ltProjR n (RJ a b) = SC (ltProjR n a) (ltProjR n b)
 infixr 1 :==>
 
 data LProc :: TRole -> [TRole] -> Type where
-  LZ :: r1 :==> r2 -> LProc r1 '[r2]
+  LZ :: Typeable a => r1 ::: a -> LProc r1 '[]
   LS :: r1 :==> r2 -> LProc r1 rs -> LProc r1 (r2 ': rs)
 
 data (:==>) :: TRole -> TRole -> Type where
@@ -325,7 +324,7 @@ gSplit f g
   = genFn $ \r1 -> do
       DPair o1 p1 <- getGen f r1
       DPair o2 p2 <- getGen g r1
-      return $ DPair (RP o1 o2) (TSplit $ LS p1 $ LZ p2)
+      return $ DPair (RP o1 o2) (TSplit $ LS p1 $ LS p2 $ LZ r1)
 
 gProd :: forall a b c d. (Typeable a, Typeable b, Typeable c, Typeable d)
       => a :=> b -> c :=> d -> (a, c) :=> (b, d)
@@ -389,20 +388,55 @@ instance ArrowChoice (:=>) where
   (+++) = gSum
   (|||) = gCase
 
-gGet :: forall a n m. (Typeable a, SingI n, Typeable n, Typeable m, SingI n)
-     => Leq n m -> Vec ('S m) a :=> a
-gGet i = genFn $ \r1 ->  do
-  let r2 = projR i r1
-  return $ DPair r2 $ TSkip r1 r2 (ltProjR i r1) (vproj i)
+gGet :: forall a m. (Typeable a, SingI m)
+     => Mod m -> Vec m a :=> a
+gGet m@(ModS i) =
+  case isTypeable (sing :: SNat m) of
+    IsTypeable Proxy ->
+      genFn $ \r1 ->  do
+        let r2 = projR i r1
+        return $ DPair r2 $ TSkip r1 r2 (ltProjR i r1) (vproj m)
+
+data IsTypeable a where
+  IsTypeable :: Typeable a => Proxy a -> IsTypeable a
+
+data IsSing a where
+  IsSing :: SingI a => Proxy a -> IsSing a
+
+isTypeable :: SNat n -> IsTypeable n
+isTypeable SZ = IsTypeable Proxy
+isTypeable (SS n) = case isTypeable n of
+                      IsTypeable Proxy -> IsTypeable Proxy
+
+isSing :: SNat n -> IsSing n
+isSing SZ = IsSing Proxy
+isSing (SS n) = case isSing n of
+                  IsSing Proxy -> IsSing Proxy
 
 data AnyRoleI a r where
   AnyRoleI :: forall a n r. 'RId n ::: a -> r :==> 'RId n -> AnyRoleI a r
 
--- gVgen :: forall a b n. (Typeable a, Typeable b, Typeable n, SingI n)
---       => SNat n -> (Int -> a :=> b) -> a :=> Vec n b
--- gVgen (SS SZ) g = \ri -> withFreshId $ \i -> do
---   let ro1 = RI PType i
---   DPair
+gVgen :: forall a b n. (Typeable a, Typeable b)
+     => SNat n -> (Mod n -> a :=> b) -> a :=> Vec n b
+gVgen n g = traverseIdx n $ reverse $ enumerateM n
+  where
+    traverseIdx :: forall c. SNat c -> [Mod n] -> a :=> Vec c b
+    traverseIdx SZ [] = genFn $ \ri -> return $ DPair RVZ $ TSplit $ LZ ri
+    traverseIdx (SS c) (h : t) =
+      case isTypeable c of
+        IsTypeable Proxy ->
+          genFn $ \ri -> do
+            DPair ro1 p <- getGen (g h) ri
+            DPair ro2 (TSplit l) <- getGen (traverseIdx c t) ri
+            return $ DPair (RVS ro1 ro2) $ TSplit $ LS p l
+    traverseIdx _ _ = error "Impossible!"
+
+instance ArrowVector (:=>) where
+  vecDict = CDict
+  natDict n = case isTypeable n of
+                IsTypeable Proxy -> CDict
+  vproj = gGet
+  vgen = gVgen
 
 generate :: forall a b r. (Typeable a, Typeable b)
          => r ::: a ->  a :=> b -> Proto
@@ -412,16 +446,14 @@ generate ri g = evalState pcgen ((freshN ri, Map.empty)::STR)
       DPair _ p <- getGen g ri
       cgen p <*> pure GEnd
 
-
 freshN :: r ::: a -> Nat
 freshN (RI _ n) = S $ fromSing n
 freshN (RP a b) = S $  max (freshN a) (freshN b)
-freshN (RVZ a ) = S $  freshN a
+freshN RVZ{}    = S Z
 freshN (RVS a b) = S $ max (freshN a) (freshN b)
 freshN (RJ a b) = S $  max (freshN a) (freshN b)
 freshN (RL _ a) = S $  freshN a
 freshN (RR _ a) = S $  freshN a
-
 
 generateR :: forall a b. (Typeable a, Typeable b)
          => a :=> b -> Proto
@@ -436,7 +468,7 @@ toSRole :: r ::: a -> TRole
 toSRole (RI _ a) = RId $ fromSing a
 toSRole (RJ a b) = RJoin (toSRole a) (toSRole b)
 toSRole (RP a b) = RProd [toSRole a, toSRole b ]
-toSRole (RVZ a ) = RProd [toSRole a]
+toSRole (RVZ   ) = RProd []
 toSRole (RVS a b) | RProd l <- toSRole b = RProd (toSRole a : l)
                   | otherwise = error "Panic! Impossible"
 toSRole (RL _ a) = RSumL (toSRole a)
@@ -454,7 +486,6 @@ getTypeOf :: forall t1 a. Typeable a => t1 ::: a -> TypeRep
 getTypeOf _ = typeRep (Proxy :: Proxy a)
 
 stepL :: LProc r1 r2 -> Maybe (LProc r1 r2)
-stepL (LZ p) | Just p' <- step p = Just $ LZ p'
 stepL (LS p1 p2) | Just p1' <- step p1 = Just $ LS p1' p2
 stepL (LS p1 p2) | Just p2' <- stepL p2 = Just $ LS p1 p2'
 stepL _ = Nothing
@@ -502,7 +533,7 @@ gen :: RoleGen m => r1 :==> r2 -> m (Proto -> Proto)
 gen = cgen . normalise
 
 cgenL :: RoleGen m => LProc r1 r2 -> m (Proto -> Proto)
-cgenL (LZ r) = cgen r
+cgenL LZ{} = return id
 cgenL (LS a b) = (.) <$> cgen a <*> cgenL b
 
 cgen :: RoleGen m => r1 :==> r2 -> m (Proto -> Proto)
@@ -549,7 +580,7 @@ cgen TSkip{} = pure id
 
 inRL :: LProc r1 ro -> TRole
 inRL (LS r _) = inR r
-inRL (LZ r) = inR r
+inRL (LZ r) = toSRole r
 
 inR :: r1 :==> r2 -> TRole
 inR (TComm r1 _ _) = toSRole r1
@@ -571,7 +602,7 @@ rolety _ = PType
 
 inTyL :: LProc r1 ro -> AnyType
 inTyL (LS r _) = inTy r
-inTyL (LZ r) = inTy r
+inTyL (LZ r) = ATy $ rolety r
 
 inTy :: r1 :==> r2 -> AnyType
 inTy (TComm r1 _ _) = ATy (rolety r1)
