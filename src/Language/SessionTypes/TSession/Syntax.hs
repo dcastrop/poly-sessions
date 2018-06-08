@@ -21,8 +21,6 @@ where
 
 import Prelude hiding ( (.), id, fst, snd, const )
 
-import Debug.Trace ( trace )
-
 import Data.Kind
 
 import Data.List ( nub )
@@ -293,7 +291,7 @@ gComp :: forall a b c. (Typeable a, Typeable b, Typeable c)
       => b :=> c -> a :=> b -> a :=> c
 gComp f g
   = genFn $ \r1 -> do
-      DPair rt p1 <- getGen g r1
+      DPair rt p1 <- keep $ getGen g r1
       DPair ro p2 <- getGen f rt
       return $ DPair ro $ TSeq rt p1 p2
 

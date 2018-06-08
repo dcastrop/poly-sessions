@@ -59,7 +59,12 @@ instance SDecide TyPrim where
       (Proved Refl, Proved Refl) -> Proved Refl
       (Disproved f, _) -> Disproved (\pr -> f $ fst $ injVect pr)
       (_, Disproved f) -> Disproved (\pr -> f $ snd $ injVect pr)
-  _ %~ _ = Disproved (\pr -> case pr of {}) -- HACK!
+  SInt32 %~ SFloat32 = Disproved (\pr -> case pr of {})
+  SInt32 %~ SVector{} = Disproved (\pr -> case pr of {})
+  SFloat32 %~ SInt32 = Disproved (\pr -> case pr of {})
+  SFloat32 %~ SVector{} = Disproved (\pr -> case pr of {})
+  SVector{} %~ SInt32 = Disproved (\pr -> case pr of {})
+  SVector{} %~ SFloat32 = Disproved (\pr -> case pr of {})
 
 data PrimTy = Int32  | Float32  | Vector Integer PrimTy
   deriving (Eq, Show)
@@ -81,7 +86,7 @@ instance (SingI i, SingI t) => SingI ('TVector i t) where
   sing = SVector sing sing
 
 instance SingKind TyPrim where
-  type DemoteRep TyPrim = PrimTy
+  type Demote TyPrim = PrimTy
   fromSing SInt32 = Int32
   fromSing SFloat32 = Float32
   fromSing (SVector i t) = Vector (fromSing i) (fromSing t)

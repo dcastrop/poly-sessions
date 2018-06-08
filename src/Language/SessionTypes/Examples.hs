@@ -9,13 +9,10 @@
 module Language.SessionTypes.Examples
 where
 
-import Debug.Trace ( trace )
-
 import Prelude hiding ( (.), id, const, fst, snd, uncurry )
 import Control.Constrained.Arrow
 import Control.Constrained.Category
 import Control.Constrained.Vector
-import Data.Kind
 import Data.Typeable
 import Data.Type.Natural
 import Data.Text.Prettyprint.Doc ( pretty )
@@ -154,20 +151,31 @@ permute2 :: ( ArrowVector t, ArrowChoice t, C t (a,a), C t (Vec n a), SingI n, C
         => SNat n -> t (Vec n a) (Vec n (a,a))
 permute2 n = vgen n (\l -> vproj l &&& vproj (l + 1))
 
-ex1Poly :: ( ArrowVector t, ArrowChoice t, C t a, C t (Vec n a), C t (Vec n (a,a))
-          , C t (a,a), C t (SNat n), C t n, SingI n, Num (Mod n))
-        => SNat n
-        -> (a -> a)
-        -> ((a,a) -> a)
+ex1Poly :: ( ArrowVector t, ArrowChoice t, C t a, C t (Vec n a), C t (Vec n (a,b))
+          , C t (a,b), C t b, C t (SNat n), C t n, SingI n, Num (Mod n))
+        => Int
+        -> SNat n
+        -> (a -> b)
+        -> ((a,b) -> a)
         -> t (Vec n a) (Vec n a)
-ex1Poly n f g =
-    iter (sNatToInt n-1) (.) id ((vmap $ arr "g" g)  . permute2 n) .
-    vmap (arr "f" f)
 
-ex1Proto :: (Typeable n, SingI n, Num (Mod n)) => SNat n -> (Vec n Int) :=> (Vec n Int)
-ex1Proto n = ex1Poly n id (uncurry (+))
+ex1Poly i n f g =
+    vmap fst .
+    iter i (.) id ((vmap $ arr "g" (g &&& snd))  . permute n) .
+    vmap (arr "f" (id &&& f))
 
-genV3 :: IO ()
-genV3 = testGen
-    (RVS (RI PType SZ) (RVS (RI PType (SS SZ)) (RVS (RI PType (SS (SS SZ))) (RVS (RI PType (SS (SS (SS SZ)))) RVZ))))
-    $ ex1Proto (SS (SS (SS (SS SZ))))
+ex1Proto :: forall n. (Typeable n, SingI n, Num (Mod n)) => (Vec n Int) :=> (Vec n Int)
+ex1Proto = ex1Poly 3 (sing :: SNat n) id (uncurry (+))
+
+-- genV :: IO ()
+-- genV = testGen
+--     (RVS (RI PType SZ) (RVS (RI PType (SS SZ)) (RVS (RI PType (SS (SS SZ))) (RVS (RI PType (SS (SS (SS SZ)))) RVZ))))
+--     ex1Proto
+
+-- Butterfly
+
+-- splitVec :: ArrowVector t => SNat n -> SNat m -> t (Vec (n + m) a) (Vec n a, Vec m a)
+-- splitVec n m = vgen n (\l -> proj l) &&& vgen m (\l -> proj (plusLeq m l))
+--
+-- zipVec :: ArrowVector t => t (Vec n a, Vec n b) (Vec n (a,b))
+-- zipVec = undefined
