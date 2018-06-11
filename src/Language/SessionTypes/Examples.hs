@@ -188,5 +188,14 @@ splitVec :: forall n m t a. (KnownNat n, KnownNat m, ArrowVector t
 splitVec n m =
   vec n (\l -> proj (extendMod @m l)) &&& vec m (\l -> proj (extendMod @n l))
 
-zipVec :: ArrowVector t => t (Vec n a, Vec n b) (Vec n (a,b))
-zipVec = undefined
+zipVec :: forall n t a b. (KnownNat n, C t a, C t b, C t (Vec n a), C t (Vec n b),
+                     C t (a,b), C t (Vec n a, Vec n b), C t (Vec n (a,b)),
+                     ArrowVector t)
+       => t (Vec n a, Vec n b) (Vec n (a,b))
+zipVec = vec (sing :: SNat n) (\l -> (proj l . fst) &&& (proj l . snd))
+
+zipWith :: forall n t a b c. (KnownNat n, C t a, C t b, C t (Vec n a), C t (Vec n b),
+                     C t (a,b), C t (Vec n a, Vec n b), C t (Vec n (a,b)),
+                     C t (Vec n c), C t c, ArrowVector t)
+       => t (a,b) c -> t (Vec n a, Vec n b) (Vec n c)
+zipWith f = amap f . zipVec
