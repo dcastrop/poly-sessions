@@ -25,21 +25,29 @@ import Data.Kind
 
 import Data.List ( nub )
 import Data.Singletons
+import Data.Singletons.TypeLits
+import Data.Singletons.Prelude.List
+import Data.Singletons.Prelude.Num
+import Data.Singletons.Prelude.Ord
+import Data.Singletons.Prelude.Eq
 import Data.Singletons.Decide
-import Data.Type.Natural
 import Data.Typeable
-import Data.Map ( Map )
+import Data.Type.Mod
+import Data.Type.Vector ( Vec )
+import qualified Data.Type.Vector as V
 import qualified Data.Map as Map
 import Control.Applicative ( (<|>) )
 import Control.Constrained.Category
 import Control.Constrained.Arrow
-import Control.Constrained.Vector
+import Control.Constrained.ArrowVector
 import Control.Monad.State.Strict hiding ( lift )
 import Data.Text.Prettyprint.Doc ( Pretty(..) )
-import Data.Word
+import Numeric.Natural
 
-import Language.FPoly.Core
-import Language.FPoly.Type
+import Unsafe.Coerce ( unsafeCoerce )
+
+import Language.Poly.Core
+import Language.Poly.Type
 import Language.SessionTypes.Common ( Role(..), addAlt, emptyAlt, altMap )
 import Language.SessionTypes.Global
 
@@ -54,6 +62,14 @@ data TRole
   | RSumL TRole
   | RSumR TRole
   | RJoin TRole TRole
+  deriving (Eq, Ord)
+
+data SRole
+  = SId Natural
+  | SProd [SRole]
+  | SSumL SRole
+  | SSumR SRole
+  | SJoin SRole SRole
   deriving (Eq, Ord, Show)
 
 instance Polynomial TRole where
@@ -76,8 +92,7 @@ type family SndR (r :: TRole) :: TRole where
 type family Proj (n :: Nat) (r :: TRole) :: TRole where
   Proj n ('RId m) = 'RId m
   Proj n ('RJoin a b) = 'RJoin (Proj n a) (Proj n b)
-  Proj 'Z ('RProd (r1 ': rs)) = r1
-  Proj ('S n) ('RProd (r1 ': rs)) = Proj n ('RProd rs)
+  Proj n ('RProd l) = l !! n
 
 infix 5 :::
 
@@ -92,12 +107,12 @@ data (:::) (t :: TRole) (a :: Type)  where
      -> (:::) ('RProd '[r1, r2]) (a, b)
 
   RVZ :: (Typeable a)
-      => (:::) ('RProd '[]) (Vec 'Z a)
+      => (:::) ('RProd '[]) (Vec 0 a)
 
   RVS :: (Typeable a, Typeable n)
       => (:::) r1 a
       -> (:::) ('RProd r2) (Vec n a)
-      -> (:::) ('RProd (r1 ': r2)) (Vec ('S n) a)
+      -> (:::) ('RProd (r1 ': r2)) (Vec (1 + n) a)
 
   RL ::(Typeable a, Typeable b)
      => PType b
@@ -124,12 +139,28 @@ sndR (RI _ n) = RI PType n
 sndR (RP _ b) = b
 sndR (RJ a b) = RJ (sndR a) (sndR b)
 
-projR :: (Typeable a)
-      => Leq n m -> r1 ::: Vec ('S m) a -> Proj n r1 ::: a
+data IfZero n where
+  IsZero :: IfZero n
+  GtZero :: IfZero n
+
+isZero :: KnownNat n => SNat n -> IfZero n
+isZero n =
+  case natVal n of
+    0 -> IsZero
+    _ -> GtZero
+
+projR :: (Typeable a, KnownNat n)
+      => SNat n -> r1 ::: Vec m a -> Proj n r1 ::: a
 projR _ (RI _ n) = RI PType n
 projR n (RJ a b) = RJ (projR n a) (projR n b)
-projR ZeroLeq{} (RVS a _) = a
-projR (SuccLeqSucc n) (RVS _ b) = projR n b
+projR n (RVS a b) =
+  withKnownNat pn $
+  case isZero n of
+    IsZero -> unsafeCoerce $ a
+    _      -> unsafeCoerce $ projR pn b
+  where
+    pn = n %- (sing :: SNat 1)
+projR _ RVZ = error "Panic! impossible!"
 
 -- sndR (RS a b) = RS (sndR a) (sndR b)
 
@@ -139,14 +170,10 @@ infix 9 :<:
 -- Less-than role relation. A value of this type is a "path" to r1 from r2, if
 -- r1 :<: r2
 
-data Elem :: a -> [a] -> Type where
-  EHere :: Elem x (x ': l)
-  EThere :: Elem x l -> Elem x (y ': l)
-
 data (:<:) :: TRole -> TRole -> Type where
   LR :: r :<: r
   LTrans :: r1 :<: r2 -> r2 :<: r3 -> r1 :<: r3
-  PR :: Elem r1 rs -> r1 :<: 'RProd rs
+  PR :: SNat n -> r1 :<: 'RProd rs -- XXX: No guarantees here!!
   S1 :: 'RSumL r0 :<: r0
   S2 :: 'RSumR r1 :<: r1
   J1 :: 'RJoin r r :<: r
@@ -161,23 +188,30 @@ data (:<:) :: TRole -> TRole -> Type where
 
 ltFstR :: r1 ::: (a, b) -> FstR r1 :<: r1
 ltFstR RI{} = LR
-ltFstR RP{} = PR EHere
+ltFstR RP{} = PR (sing :: SNat 0)
 ltFstR (RJ a b) = SC (ltFstR a) (ltFstR b)
 
+data EqRefl r where
+  EqRefl :: (r == r) ~ 'True => EqRefl r
 
 ltSndR :: r1 ::: (a, b) -> SndR r1 :<: r1
 ltSndR RI{} = LR
-ltSndR RP{} = PR (EThere EHere)
+ltSndR RP{} = PR (sing :: SNat 1)
 ltSndR (RJ a b) = SC (ltSndR a) (ltSndR b)
 
 --- XXX: wrong! n <= m
-ltProjR :: Leq n m -> r1 ::: Vec ('S m) a -> Proj n r1 :<: r1
+ltProjR :: KnownNat n => SNat n -> r1 ::: Vec m a -> Proj n r1 :<: r1
 ltProjR _ RI{} = LR
-ltProjR ZeroLeq{} (RVS _ _) = PR EHere
-ltProjR (SuccLeqSucc n) (RVS _ b) = case ltProjR n b of
-                              PR t -> PR (EThere t)
-                              _ -> error "Panic! Impossible"
+ltProjR n (RVS _ b) =
+  case isZero n of
+    IsZero -> PR (sing :: SNat 0)
+    _      -> case withKnownNat pn $ ltProjR pn b of
+               PR t -> PR (t %+ (sing :: SNat 1))
+               _    ->  error "Panic! Impossible"
+  where
+    pn = n %- (sing :: SNat 1)
 ltProjR n (RJ a b) = SC (ltProjR n a) (ltProjR n b)
+ltProjR _ RVZ = error "Panic! impossible!"
 
 infixr 1 :==>
 
@@ -225,27 +259,27 @@ data (:==>) :: TRole -> TRole -> Type where
            -> 'RSumR ri1 :==> ro1
 
 class Monad m => RoleGen m where
-  fresh :: m Nat
+  fresh :: m Natural
   keep  :: m a -> m a
 
-  joinR :: TRole -> TRole -> m Role
+  joinR :: SRole -> SRole -> m Role
 
-type STR = (Nat, Map TRole Role)
+type STR = (Natural, Map.Map SRole Role)
 
 instance RoleGen (State STR) where
-  fresh = get >>= \(r, m) -> put (S r, m) >> return r
+  fresh = get >>= \(r, m) -> put (r + 1, m) >> return r
   keep c = get >>= \(i, _) -> c >>= \a ->
              get >>= \(_, m) -> put (i, m) >> return a
-  joinR (RId n) (RId m)
-    | n == m = return $ Rol $ natToInt n
-  joinR (RSumL a) b = joinR a b
-  joinR (RSumR a) b = joinR a b
-  joinR a (RSumL b) = joinR a b
-  joinR a (RSumR b) = joinR a b
+  joinR (SId n) (SId m)
+    | n == m = return $ Rol $ fromIntegral n
+  joinR (SSumL a) b = joinR a b
+  joinR (SSumR a) b = joinR a b
+  joinR a (SSumL b) = joinR a b
+  joinR a (SSumR b) = joinR a b
   joinR a b = get >>= \(r, m) ->
-      let rol = Rol $ natToInt r
+      let rol = Rol $ fromIntegral r
           newm = Map.insert a rol $ Map.insert b rol m
-      in maybe (put (S r, newm) *> return rol) return (lookupR m)
+      in maybe (put (1 + r, newm) *> return rol) return (lookupR m)
     where
       lookupR m = Map.lookup a m <|> Map.lookup b m
 
@@ -386,14 +420,14 @@ instance ArrowChoice (:=>) where
   (+++) = gSum
   (|||) = gCase
 
-gGet :: forall a m. (Typeable a, SingI m)
-     => Mod m -> Vec m a :=> a
-gGet m@(ModS i) =
-  case isTypeable (sing :: SNat m) of
-    IsTypeable Proxy ->
-      genFn $ \r1 ->  do
+gGet :: forall a m. (Typeable a, KnownNat m)
+     => TMod m -> Vec m a :=> a
+gGet m =
+  case modVal m of
+    SomeSing i ->
+      genFn $ \r1 ->  withKnownNat i $ do
         let r2 = projR i r1
-        return $ DPair r2 $ TSkip r1 r2 (ltProjR i r1) (vproj m)
+        return $ DPair r2 $ TSkip r1 r2 (ltProjR i r1) (proj m)
 
 data IsTypeable a where
   IsTypeable :: Typeable a => Proxy a -> IsTypeable a
@@ -401,40 +435,35 @@ data IsTypeable a where
 data IsSing a where
   IsSing :: SingI a => Proxy a -> IsSing a
 
-isTypeable :: SNat n -> IsTypeable n
-isTypeable SZ = IsTypeable Proxy
-isTypeable (SS n) = case isTypeable n of
-                      IsTypeable Proxy -> IsTypeable Proxy
-
-isSing :: SNat n -> IsSing n
-isSing SZ = IsSing Proxy
-isSing (SS n) = case isSing n of
-                  IsSing Proxy -> IsSing Proxy
+-- isTypeable :: SNat n -> IsTypeable n
+-- isTypeable SZ = IsTypeable Proxy
+-- isTypeable (SS n) = case isTypeable n of
+                      -- IsTypeable Proxy -> IsTypeable Proxy
+--
+-- isSing :: SNat n -> IsSing n
+-- isSing SZ = IsSing Proxy
+-- isSing (SS n) = case isSing n of
+                  -- IsSing Proxy -> IsSing Proxy
 
 data AnyRoleI a r where
   AnyRoleI :: forall a n r. 'RId n ::: a -> r :==> 'RId n -> AnyRoleI a r
 
-gVgen :: forall a b n. (Typeable a, Typeable b)
-     => SNat n -> (Mod n -> a :=> b) -> a :=> Vec n b
-gVgen n g = traverseIdx n $ reverse $ enumerateM n
+gVgen :: forall a b n. (Typeable a, Typeable b, KnownNat n)
+     => SNat n -> (TMod n -> a :=> b) -> a :=> Vec n b
+gVgen n g = traverseIdx $ V.enum n
   where
-    traverseIdx :: forall c. SNat c -> [Mod n] -> a :=> Vec c b
-    traverseIdx SZ [] = genFn $ \ri -> return $ DPair RVZ $ TSplit $ LZ ri
-    traverseIdx (SS c) (h : t) =
-      case isTypeable c of
-        IsTypeable Proxy ->
-          genFn $ \ri -> do
-            DPair ro1 p <- getGen (g h) ri
-            DPair ro2 (TSplit l) <- getGen (traverseIdx c t) ri
-            return $ DPair (RVS ro1 ro2) $ TSplit $ LS p l
-    traverseIdx _ _ = error "Impossible!"
+    traverseIdx :: KnownNat c => Vec c (TMod n) -> a :=> Vec c b
+    traverseIdx = V.foldr (\h t -> genFn $ \ri -> do
+                              DPair ro1 p <- getGen (g h) ri
+                              DPair ro2 (TSplit l) <- getGen t ri
+                              return $ unsafeCoerce $ DPair (RVS ro1 ro2) $ TSplit $ LS p l)
+                          (genFn $ \ri -> return $ unsafeCoerce $ DPair (RVZ :: 'RProd '[] ::: Vec 0 a) $ TSplit $ LZ ri)
 
 instance ArrowVector (:=>) where
   vecDict = CDict
-  natDict n = case isTypeable n of
-                IsTypeable Proxy -> CDict
-  vproj = gGet
-  vgen = gVgen
+  natDict _ = CDict
+  proj = gGet
+  vec = gVgen
 
 generate :: forall a b r. (Typeable a, Typeable b)
          => r ::: a ->  a :=> b -> Proto
@@ -444,38 +473,38 @@ generate ri g = evalState pcgen ((freshN ri, Map.empty)::STR)
       DPair _ p <- getGen g ri
       cgen p <*> pure GEnd
 
-freshN :: r ::: a -> Nat
-freshN (RI _ n) = S $ fromSing n
-freshN (RP a b) = S $  max (freshN a) (freshN b)
-freshN RVZ{}    = S Z
-freshN (RVS a b) = S $ max (freshN a) (freshN b)
-freshN (RJ a b) = S $  max (freshN a) (freshN b)
-freshN (RL _ a) = S $  freshN a
-freshN (RR _ a) = S $  freshN a
+freshN :: r ::: a -> Natural
+freshN (RI _ n) = 1 + fromIntegral (fromSing n)
+freshN (RP a b) = 1 +  max (freshN a) (freshN b)
+freshN RVZ{}    = 1
+freshN (RVS a b) = 1 + max (freshN a) (freshN b)
+freshN (RJ a b) = 1 + max (freshN a) (freshN b)
+freshN (RL _ a) = 1 + freshN a
+freshN (RR _ a) = 1 + freshN a
 
 generateR :: forall a b. (Typeable a, Typeable b)
          => a :=> b -> Proto
-generateR g = evalState pcgen ((S Z, Map.empty)::STR)
+generateR g = evalState pcgen ((1, Map.empty)::STR)
   where
     pcgen    = do
       DPair _ p <- getGen g ri
       cgen p <*> pure GEnd
-    ri = RI PType (sing :: SNat 'Z)
+    ri = RI PType (sing :: SNat 0)
 
-toSRole :: r ::: a -> TRole
-toSRole (RI _ a) = RId $ fromSing a
-toSRole (RJ a b) = RJoin (toSRole a) (toSRole b)
-toSRole (RP a b) = RProd [toSRole a, toSRole b ]
-toSRole (RVZ   ) = RProd []
-toSRole (RVS a b) | RProd l <- toSRole b = RProd (toSRole a : l)
+toSRole :: r ::: a -> SRole
+toSRole (RI _ a) = SId $ fromIntegral $ fromSing a
+toSRole (RJ a b) = SJoin (toSRole a) (toSRole b)
+toSRole (RP a b) = SProd [toSRole a, toSRole b ]
+toSRole (RVZ   ) = SProd []
+toSRole (RVS a b) | SProd l <- toSRole b = SProd (toSRole a : l)
                   | otherwise = error "Panic! Impossible"
-toSRole (RL _ a) = RSumL (toSRole a)
-toSRole (RR _ a) = RSumR (toSRole a)
+toSRole (RL _ a) = SSumL (toSRole a)
+toSRole (RR _ a) = SSumR (toSRole a)
 
-flatten :: RoleGen m => TRole -> m [Role]
-flatten (RId   i) = return [Rol $ natToInt i]
-flatten (RProd a) = concat <$> mapM flatten a
-flatten (RJoin r1 r2) = (:[]) <$> joinR r1 r2
+flatten :: RoleGen m => SRole -> m [Role]
+flatten (SId   i) = return [Rol $ fromIntegral i]
+flatten (SProd a) = concat <$> mapM flatten a
+flatten (SJoin r1 r2) = (:[]) <$> joinR r1 r2
 flatten r = error $ "Panic! Ill-formed protocol: "
                   ++ show r
                   ++ " cannot occur during role flattening"
@@ -576,11 +605,11 @@ cgen (TBranchL x1) = cgen x1
 cgen (TBranchR x1) = cgen x1
 cgen TSkip{} = pure id
 
-inRL :: LProc r1 ro -> TRole
+inRL :: LProc r1 ro -> SRole
 inRL (LS r _) = inR r
 inRL (LZ r) = toSRole r
 
-inR :: r1 :==> r2 -> TRole
+inR :: r1 :==> r2 -> SRole
 inR (TComm r1 _ _) = toSRole r1
 inR (TDistr r1 _ _) = toSRole r1
 inR (TSplit r1) = inRL r1
@@ -589,7 +618,7 @@ inR (TBranchL r1) = inR r1
 inR (TBranchR r1) = inR r1
 inR (TAlt r1 r2)
   = case (inR r1, inR r2) of
-      (a, b) -> RJoin a b
+      (a, b) -> SJoin a b
 inR (TSkip r _ _ _) = toSRole r
 
 data AnyType where

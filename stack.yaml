@@ -1,4 +1,4 @@
-resolver: nightly-2018-06-08
+resolver: nightly-2018-06-11
 
 packages:
 - .
@@ -8,17 +8,15 @@ extra-deps:
 # - https://github.com/dcastrop/quoted-prettyprinter/archive/v0.1.1.tar.gz
 # - https://github.com/dcastrop/deep-sessions/archive/v0.1.0.zip
 - git: https://github.com/dcastrop/quoted-prettyprinter
-  commit: e6e9b6363e8067d2961d4e600501d7137242c387
+  commit: HEAD
 - git: https://github.com/dcastrop/constrained-control
-  commit: 95f74006bb1cd5be2ad1b5ab516a335d22b355ad
+  commit: HEAD
 - git: https://github.com/dcastrop/IVector
-  commit: 62ea8e95d08b24d729f26b0dd921c8b03267ca2a
- - ../../poly-lang/code
-- ../../deep-sessions/code
-- type-natural-0.8.1.0
-- equational-reasoning-0.5.1.0
-- ghc-typelits-presburger-0.2.0.0
-
+  commit: HEAD
+- git: https://github.com/dcastrop/poly-lang
+  commit: HEAD
+- git: https://github.com/dcastrop/deep-sessions
+  commit: HEAD
 
 flags: {}
 extra-package-dbs: []

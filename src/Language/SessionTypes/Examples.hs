@@ -1,3 +1,5 @@
+{-# OPTIONS_GHC -fplugin GHC.TypeLits.Normalise #-}
+{-# OPTIONS_GHC -fplugin GHC.TypeLits.KnownNat.Solver #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE TypeInType #-}
 {-# LANGUAGE KindSignatures #-}
@@ -5,6 +7,7 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE TypeOperators #-}
 {-# LANGUAGE TypeFamilies #-}
+{-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 module Language.SessionTypes.Examples
 where
@@ -12,12 +15,17 @@ where
 import Prelude hiding ( (.), id, const, fst, snd, uncurry )
 import Control.Constrained.Arrow
 import Control.Constrained.Category
-import Control.Constrained.Vector
+import Control.Constrained.ArrowVector
+import Control.Constrained.ArrowFunctor
 import Data.Typeable
-import Data.Type.Natural
+import Data.Singletons
+import Data.Singletons.TypeLits
+import Data.Singletons.Prelude.Num
+import Data.Type.Mod
+import Data.Type.Vector ( Vec )
 import Data.Text.Prettyprint.Doc ( pretty )
 
-import Language.FPoly
+import Language.Poly
 import Language.SessionTypes.TSession.Syntax
 
 testGenR :: (Typeable a, Typeable b) => a :=> b -> IO ()
@@ -143,16 +151,16 @@ example9 = gSplit (wrap inc) id . gFst
 -- Poly Level
 
 permute :: ( ArrowVector t, ArrowChoice t, C t a, C t b
-          , C t (a, b), SingI n, C t n, C t (Vec n (a, b)), Num (Mod n))
+          , C t (a, b), KnownNat n, C t n, C t (Vec n (a, b)), Num (TMod n))
         => SNat n -> t (Vec n (a, b)) (Vec n (a, b))
-permute n = vgen n (\l -> (fst . vproj l) &&& (snd . vproj (l + 1)))
+permute n = vec n (\l -> (fst . proj l) &&& (snd . proj (l + 1)))
 
-permute2 :: ( ArrowVector t, ArrowChoice t, C t (a,a), C t (Vec n a), SingI n, C t a, Num (Mod n) )
+permute2 :: ( ArrowVector t, ArrowChoice t, C t (a,a), C t (Vec n a), KnownNat n, C t a, Num (TMod n) )
         => SNat n -> t (Vec n a) (Vec n (a,a))
-permute2 n = vgen n (\l -> vproj l &&& vproj (l + 1))
+permute2 n = vec n (\l -> proj l &&& proj (l + 1))
 
 ex1Poly :: ( ArrowVector t, ArrowChoice t, C t a, C t (Vec n a), C t (Vec n (a,b))
-          , C t (a,b), C t b, C t (SNat n), C t n, SingI n, Num (Mod n))
+          , C t (a,b), C t b, C t (SNat n), C t n, KnownNat n, Num (TMod n))
         => Int
         -> SNat n
         -> (a -> b)
@@ -160,11 +168,11 @@ ex1Poly :: ( ArrowVector t, ArrowChoice t, C t a, C t (Vec n a), C t (Vec n (a,b
         -> t (Vec n a) (Vec n a)
 
 ex1Poly i n f g =
-    vmap fst .
-    iter i (.) id ((vmap $ arr "g" (g &&& snd))  . permute n) .
-    vmap (arr "f" (id &&& f))
+    amap fst .
+    iter i (.) id ((amap $ arr "g" (g &&& snd))  . permute n) .
+    amap (arr "f" (id &&& f))
 
-ex1Proto :: forall n. (Typeable n, SingI n, Num (Mod n)) => (Vec n Int) :=> (Vec n Int)
+ex1Proto :: forall n. (Typeable n, KnownNat n, Num (TMod n)) => (Vec n Int) :=> (Vec n Int)
 ex1Proto = ex1Poly 3 (sing :: SNat n) id (uncurry (+))
 
 -- genV :: IO ()
@@ -174,8 +182,11 @@ ex1Proto = ex1Poly 3 (sing :: SNat n) id (uncurry (+))
 
 -- Butterfly
 
--- splitVec :: ArrowVector t => SNat n -> SNat m -> t (Vec (n + m) a) (Vec n a, Vec m a)
--- splitVec n m = vgen n (\l -> proj l) &&& vgen m (\l -> proj (plusLeq m l))
---
--- zipVec :: ArrowVector t => t (Vec n a, Vec n b) (Vec n (a,b))
--- zipVec = undefined
+splitVec :: forall n m t a. (KnownNat n, KnownNat m, ArrowVector t
+                      , C t a, C t (Vec (m + n) a), C t (Vec n a), C t (Vec m a))
+         => SNat n -> SNat m -> t (Vec (n + m) a) (Vec n a, Vec m a)
+splitVec n m =
+  vec n (\l -> proj (extendMod @m l)) &&& vec m (\l -> proj (extendMod @n l))
+
+zipVec :: ArrowVector t => t (Vec n a, Vec n b) (Vec n (a,b))
+zipVec = undefined
