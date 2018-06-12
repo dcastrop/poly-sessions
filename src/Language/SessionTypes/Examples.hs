@@ -1,3 +1,4 @@
+{-# LANGUAGE UndecidableInstances #-}
 {-# OPTIONS_GHC -fplugin GHC.TypeLits.Normalise #-}
 {-# OPTIONS_GHC -fplugin GHC.TypeLits.KnownNat.Solver #-}
 {-# LANGUAGE FlexibleContexts #-}
@@ -5,6 +6,7 @@
 {-# LANGUAGE KindSignatures #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE DataKinds #-}
+{-# LANGUAGE GADTs #-}
 {-# LANGUAGE TypeOperators #-}
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE TypeApplications #-}
@@ -21,9 +23,13 @@ import Data.Typeable
 import Data.Singletons
 import Data.Singletons.TypeLits
 import Data.Singletons.Prelude.Num
+import Data.Singletons.Prelude.Bool
+import Data.Singletons.Prelude.Eq
 import Data.Type.Mod
 import Data.Type.Vector ( Vec )
 import Data.Text.Prettyprint.Doc ( pretty )
+
+import Unsafe.Coerce
 
 import Language.Poly
 import Language.SessionTypes.TSession.Syntax
@@ -182,11 +188,22 @@ ex1Proto = ex1Poly 3 (sing :: SNat n) id (uncurry (+))
 
 -- Butterfly
 
+evensOdds :: forall n t a. (KnownNat n, ArrowVector t
+                      , C t a, C t (Vec (2 * n) a), C t (Vec n a) )
+         =>  t (Vec (2 * n) a) (Vec n a, Vec n a)
+evensOdds =
+  vec n (\l -> proj (extMod 0 l)) &&& vec n (\l -> proj (extMod 1 l))
+  where
+    n = sing :: SNat n
+
 splitVec :: forall n m t a. (KnownNat n, KnownNat m, ArrowVector t
                       , C t a, C t (Vec (m + n) a), C t (Vec n a), C t (Vec m a))
-         => SNat n -> SNat m -> t (Vec (n + m) a) (Vec n a, Vec m a)
-splitVec n m =
-  vec n (\l -> proj (extendMod @m l)) &&& vec m (\l -> proj (extendMod @n l))
+         =>  t (Vec (n + m) a) (Vec n a, Vec m a)
+splitVec =
+  vec n (\l -> proj (weakenMod @m l)) &&& vec m (\l -> proj (weakenMod @n l))
+  where
+    n = sing :: SNat n
+    m = sing :: SNat m
 
 zipVec :: forall n t a b. (KnownNat n, C t a, C t b, C t (Vec n a), C t (Vec n b),
                      C t (a,b), C t (Vec n a, Vec n b), C t (Vec n (a,b)),
@@ -194,8 +211,72 @@ zipVec :: forall n t a b. (KnownNat n, C t a, C t b, C t (Vec n a), C t (Vec n b
        => t (Vec n a, Vec n b) (Vec n (a,b))
 zipVec = vec (sing :: SNat n) (\l -> (proj l . fst) &&& (proj l . snd))
 
-zipWith :: forall n t a b c. (KnownNat n, C t a, C t b, C t (Vec n a), C t (Vec n b),
+zipWithV :: forall n t a b c. (KnownNat n, C t a, C t b, C t (Vec n a), C t (Vec n b),
                      C t (a,b), C t (Vec n a, Vec n b), C t (Vec n (a,b)),
                      C t (Vec n c), C t c, ArrowVector t)
        => t (a,b) c -> t (Vec n a, Vec n b) (Vec n c)
-zipWith f = amap f . zipVec
+zipWithV f = amap f . zipVec
+
+append :: forall n m t a. (KnownNat n, KnownNat m, ArrowVector t,
+                    C t a, C t (Vec n a), C t (Vec m a), C t (Vec n a, Vec m a)
+                    , C t (Vec (n+m) a))
+       => t (Vec n a, Vec m a) (Vec (n+m) a)
+append = withKnownNat nm $
+         vec nm (\l -> case splitMod l of
+                        Left l' -> proj l' . fst
+                        Right r' -> proj r' . snd)
+  where
+    nm = n %+ m
+    n = sing :: SNat n
+    m = sing :: SNat m
+
+
+data IfNat n where
+  IfZero :: n ~ 0 => IfNat n
+  IfSucc :: n ~ (m + 1) => SNat m -> IfNat n
+
+nIf :: forall a (c :: Bool). Sing c -> a -> a -> a
+nIf STrue x _ = x
+nIf SFalse _ y = y
+
+ifZero :: SNat n -> IfNat n
+ifZero n = nIf (n %== (sing :: SNat 0)) (unsafeCoerce IfZero)
+           (unsafeCoerce (IfSucc m))
+  where
+    m = n %- (sing :: SNat 1)
+
+
+split :: forall n t a. (KnownNat n, ArrowVector t, C t a
+                 , C t (Vec ((2 ^ n) + (2 ^ n)) a), C t (Vec (2 ^ n) a),
+                 C t (Vec ((2 ^ (n - 1)) + (2 ^ (n - 1))) a),
+                         C t (Vec (2 ^ (n - 1)) a))
+      => Either (t (Vec (2^n) a) (Vec (2^n) a)) (t (Vec (2^n) a) (Vec (2^(n-1)) a, Vec (2^(n-1)) a))
+split = case ifZero n of
+          IfZero -> Left id
+          IfSucc _ -> Right splitVec
+
+  where
+    n = sing :: SNat n
+
+butterfly :: forall n t a b. ( KnownNat n, C t a, C t b, ArrowVector t , C t a,
+                       C t (Vec (2^n) a), C t (Vec (2^n) b), C t (b, b))
+          => t a b -> t (b,b) b -> t (Vec (2 ^ n) a) (Vec (2 ^ n) b)
+butterfly f g =
+  case ifZero n of
+    IfZero -> amap f
+    IfSucc (m :: SNat x) ->
+      case natDict @t ((sing :: SNat 2) %^ m) of
+        CDict -> case natDict @t (((sing :: SNat 2) %^ m) %+ ((sing :: SNat 2) %^ m)) of
+         CDict -> case natDict @t ((sing :: SNat 2) %* (sing :: SNat 2) %^ m) of
+          CDict -> case (vecDict @t @a @(2 ^ x), vecDict @t @b @(2 ^ x), vecDict @t @(b,b) @(2 ^ x)) of
+           (CDict, CDict, CDict) -> case (vecDict @t @a @((2 ^ x) + (2 ^ x)), vecDict @t @b @((2 ^ x) + (2 ^ x))) of
+             (CDict, CDict) -> case (pairDict @t @(Vec (2^x) a) @(Vec (2^x) a), pairDict @t @(Vec (2^x) b) @(Vec (2^x) b)) of
+               (CDict, CDict) -> case vecDict @t @a @(2 * (2 ^ x)) of
+                  CDict
+                    -> append . ((zipWithV g &&& (zipWithV g . (snd &&& fst))) . (butterfly f g *** butterfly f g)) . evensOdds
+  where
+    n = sing :: SNat n
+
+
+ex2Proto :: forall n. (Typeable (2^n), KnownNat n, Num (TMod n)) => (Vec (2^n) Int) :=> (Vec (2^n) Int)
+ex2Proto = butterfly @n id (wrap $ arr "(*)" (uncurry (*))) . vec (sing :: SNat (2^n)) (\l -> wrap (proj l))
