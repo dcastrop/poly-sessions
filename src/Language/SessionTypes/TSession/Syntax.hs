@@ -380,7 +380,6 @@ instance Show a => Const a (:=>) where
   const x = wrap (const x)
 
 instance Arrow (:=>) where
-  pairDict = CDict
   arr s f = wrap (arr s f)
   fst = gFst
   snd = gSnd
@@ -428,7 +427,6 @@ gSum :: forall a b c d. (Typeable a, Typeable b, Typeable c, Typeable d)
 gSum f g = gCase (gInl . f) (gInr . g)
 
 instance ArrowChoice (:=>) where
-  eitherDict = CDict
   inl = gInl
   inr = gInr
   (+++) = gSum
@@ -460,9 +458,10 @@ data IsSing a where
                   -- IsSing Proxy -> IsSing Proxy
 
 gVgen :: forall a b n. (Typeable a, Typeable b, KnownNat n)
-     => SNat n -> (TMod n -> a :=> b) -> a :=> Vec n b
-gVgen n g = traverseIdx $ V.enum n
+     => (TMod n -> a :=> b) -> a :=> Vec n b
+gVgen g = traverseIdx $ V.enum n
   where
+    n = sing :: SNat n
     traverseIdx :: KnownNat c => Vec c (TMod n) -> a :=> Vec c b
     traverseIdx = V.foldr (\h t -> genFn $ \ri -> do
                               DPair ro1 p <- getGen (g h) ri
@@ -470,9 +469,7 @@ gVgen n g = traverseIdx $ V.enum n
                               return $ unsafeCoerce $ DPair (RVS ro1 ro2) $ TSplit $ LS p l)
                           (genFn $ \ri -> return $ unsafeCoerce $ DPair (RVZ :: 'RProd '[] ::: Vec 0 a) $ TSplit $ LZ ri)
 
-instance ArrowVector (:=>) where
-  vecDict = CDict
-  natDict _ = CDict
+instance ArrowVector Vec (:=>) where
   proj = gGet
   vec = gVgen
 

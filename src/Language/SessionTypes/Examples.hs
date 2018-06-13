@@ -1,3 +1,4 @@
+{-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE UndecidableInstances #-}
 {-# OPTIONS_GHC -fplugin GHC.TypeLits.Normalise #-}
 {-# OPTIONS_GHC -fplugin GHC.TypeLits.KnownNat.Solver #-}
@@ -11,6 +12,7 @@
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE AllowAmbiguousTypes #-}
 module Language.SessionTypes.Examples
 where
 
@@ -28,6 +30,9 @@ import Data.Singletons.Prelude.Eq
 import Data.Type.Mod
 import Data.Type.Vector ( Vec )
 import Data.Text.Prettyprint.Doc ( pretty )
+import Data.Kind ( Type )
+import GHC.Exts ( Constraint )
+import Numeric.Natural
 
 import Unsafe.Coerce
 
@@ -156,30 +161,31 @@ example9 = gSplit (wrap inc) id . gFst
 -- RING with products
 -- Poly Level
 
-permute :: ( ArrowVector t, ArrowChoice t, C t a, C t b
-          , C t (a, b), KnownNat n, C t n, C t (Vec n (a, b)), Num (TMod n))
-        => SNat n -> t (Vec n (a, b)) (Vec n (a, b))
-permute n = vec n (\l -> (fst . proj l) &&& (snd . proj (l + 1)))
+permute :: forall n t a b. ( ArrowVector Vec t, ArrowChoice t, PairC t a b
+                     , KnownNat n, PairC t (Vec n (a,b)) a
+                     , PairC t (Vec n (a,b)) (Vec n (a,b)) )
+        => t (Vec n (a, b)) (Vec n (a, b))
+permute = vec (\l -> (fst . proj l) &&& (snd . proj (l + 1)))
 
-permute2 :: ( ArrowVector t, ArrowChoice t, C t (a,a), C t (Vec n a), KnownNat n, C t a, Num (TMod n) )
-        => SNat n -> t (Vec n a) (Vec n (a,a))
-permute2 n = vec n (\l -> proj l &&& proj (l + 1))
+permute2 :: ( ArrowVector Vec t, ArrowChoice t, PairC t a a, VecC t Vec n (a,a)
+           , PairC t (Vec n a) (Vec n a), PairC t (Vec n a)  a)
+        => t (Vec n a) (Vec n (a,a))
+permute2 = vec (\l -> proj l &&& proj (l + 1))
 
-ex1Poly :: ( ArrowVector t, ArrowChoice t, C t a, C t (Vec n a), C t (Vec n (a,b))
-          , C t (a,b), C t b, C t (SNat n), C t n, KnownNat n, Num (TMod n))
+ex1Poly :: ( ArrowVector Vec t, ArrowChoice t, VecC t Vec n a, VecC t Vec n (a,b)
+          , PairC t a b, PairC t (Vec n (a,b)) a, PairC t (Vec n (a,b)) (Vec n (a,b)) )
         => Int
-        -> SNat n
         -> (a -> b)
         -> ((a,b) -> a)
         -> t (Vec n a) (Vec n a)
 
-ex1Poly i n f g =
+ex1Poly i f g =
     amap fst .
-    iter i (.) id ((amap $ arr "g" (g &&& snd))  . permute n) .
+    iter i (.) id ((amap $ arr "g" (g &&& snd))  . permute) .
     amap (arr "f" (id &&& f))
 
-ex1Proto :: forall n. (Typeable n, KnownNat n, Num (TMod n)) => (Vec n Int) :=> (Vec n Int)
-ex1Proto = ex1Poly 3 (sing :: SNat n) id (uncurry (+))
+ex1Proto :: KnownNat n => (Vec n Int) :=> (Vec n Int)
+ex1Proto = ex1Poly 3 id (uncurry (+))
 
 -- genV :: IO ()
 -- genV = testGen
@@ -188,95 +194,119 @@ ex1Proto = ex1Poly 3 (sing :: SNat n) id (uncurry (+))
 
 -- Butterfly
 
-evensOdds :: forall n t a. (KnownNat n, ArrowVector t
-                      , C t a, C t (Vec (2 * n) a), C t (Vec n a) )
+evensOdds :: forall n t a. ( ArrowVector Vec t, VecC t Vec (2*n) a
+                     , VecC t Vec n a, PairC t (Vec (2*n) a) (Vec (2*n) a)
+                     , PairC t (Vec (2*n) a) (Vec n a), PairC t (Vec n a) (Vec n a) )
          =>  t (Vec (2 * n) a) (Vec n a, Vec n a)
 evensOdds =
-  vec n (\l -> proj (extMod 0 l)) &&& vec n (\l -> proj (extMod 1 l))
+  vec (\l -> proj (extMod 0 l)) &&& vec (\l -> proj (extMod 1 l))
   where
     n = sing :: SNat n
 
-splitVec :: forall n m t a. (KnownNat n, KnownNat m, ArrowVector t
-                      , C t a, C t (Vec (m + n) a), C t (Vec n a), C t (Vec m a))
+splitVec :: forall n m t a. ( KnownNat n, KnownNat m, ArrowVector Vec t, C t a
+                      , PairC t (Vec n a) (Vec m a)
+                      , PairC t (Vec n a) (Vec (m+n) a)
+                      , PairC t (Vec (m+n) a) (Vec (m+n) a))
          =>  t (Vec (n + m) a) (Vec n a, Vec m a)
 splitVec =
-  vec n (\l -> proj (weakenMod @m l)) &&& vec m (\l -> proj (weakenMod @n l))
+  vec (\l -> proj (weakenMod @m l)) &&& vec (\l -> proj (weakenMod @n l))
   where
     n = sing :: SNat n
     m = sing :: SNat m
 
-zipVec :: forall n t a b. (KnownNat n, C t a, C t b, C t (Vec n a), C t (Vec n b),
-                     C t (a,b), C t (Vec n a, Vec n b), C t (Vec n (a,b)),
-                     ArrowVector t)
+zipVec :: forall n t a b. ( ArrowVector Vec t, VecC t Vec n a, VecC t Vec n b
+                    , PairC t (Vec n b) (Vec n a)
+                    , PairC t a (Vec n a, Vec n b)
+                    , PairC t (Vec n a, Vec n b) (Vec n a, Vec n b)
+                    , PairC t a b
+                    , VecC t Vec n (a,b) )
        => t (Vec n a, Vec n b) (Vec n (a,b))
-zipVec = vec (sing :: SNat n) (\l -> (proj l . fst) &&& (proj l . snd))
+zipVec = vec (\l -> (proj l . fst) &&& (proj l . snd))
 
-zipWithV :: forall n t a b c. (KnownNat n, C t a, C t b, C t (Vec n a), C t (Vec n b),
-                     C t (a,b), C t (Vec n a, Vec n b), C t (Vec n (a,b)),
-                     C t (Vec n c), C t c, ArrowVector t)
+zipWithV :: forall n t a b c. ( ArrowVector Vec t, PairC t a b, VecC t Vec n c
+                        , PairC t (Vec n a) (Vec n b), VecC t Vec n (a,b)
+                        , PairC t a (Vec n a, Vec n b)
+                        , PairC t (Vec n a, Vec n b) (Vec n a, Vec n b)
+                        )
        => t (a,b) c -> t (Vec n a, Vec n b) (Vec n c)
 zipWithV f = amap f . zipVec
 
-append :: forall n m t a. (KnownNat n, KnownNat m, ArrowVector t,
-                    C t a, C t (Vec n a), C t (Vec m a), C t (Vec n a, Vec m a)
-                    , C t (Vec (n+m) a))
+append :: forall n m t a. ( ArrowVector Vec t, C t (Vec (n+m) a)
+                    , C t a, KnownNat n, KnownNat m
+                    , PairC t (Vec n a) (Vec m a) )
        => t (Vec n a, Vec m a) (Vec (n+m) a)
-append = withKnownNat nm $
-         vec nm (\l -> case splitMod l of
+append = vec (\l -> case splitMod l of
                         Left l' -> proj l' . fst
                         Right r' -> proj r' . snd)
-  where
-    nm = n %+ m
-    n = sing :: SNat n
-    m = sing :: SNat m
+
+data INat where
+  Z :: INat
+  S :: INat -> INat
+
+data RNat n where
+  SZ :: RNat 'Z
+  SS :: RNat r -> RNat ('S r)
+
+type family ToNat (i :: INat) :: Nat where
+  ToNat 'Z = 0
+  ToNat ('S n) = 1 + ToNat n
+
+type family FromNat (i :: Nat) :: INat where
+  FromNat 0 = 'Z
+  FromNat n = 'S (FromNat (n-1))
+
+type family Pred (i :: INat) :: INat where
+  Pred ('S n) = n
+  Pred 'Z = 'Z
+
+data SomeNat = forall n. SomeNat (RNat n)
+
+type family MkCnstr (n :: INat) k a b :: Constraint where
+  MkCnstr n k a b = (k a, k b, k (Vec (2 ^ (ToNat n)) a), k (Vec (2 ^ (ToNat n)) b))
+
+class RecNat n where
+  recNat :: RNat n
+
+instance RecNat 'Z where
+  recNat = SZ
+instance RecNat n => RecNat ('S n) where
+  recNat = SS recNat
 
 
-data IfNat n where
-  IfZero :: n ~ 0 => IfNat n
-  IfSucc :: n ~ (m + 1) => SNat m -> IfNat n
+type family Cnstr (n :: INat) k a b :: Constraint where
+  Cnstr 'Z k a b = (MkCnstr 'Z k a b)
+  Cnstr ('S n) k a b = ( k (Vec (2 * (2 ^ (ToNat n))) a)
+                      , k (Vec (2 * (2 ^ (ToNat n))) a, Vec (2 * (2 ^ (ToNat n))) a)
+                      , k (Vec (2 ^ (ToNat n)) a, Vec (2 * (2 ^ (ToNat n))) a)
+                      , k (Vec (2 * (2 ^ (ToNat n))) a, Vec (2 ^ (ToNat n)) a)
+                      , k (Vec (2 ^ (ToNat n)) b, Vec (2 ^ (ToNat n)) b)
+                      , k (Vec (2 ^ (ToNat n)) a, Vec (2 ^ (ToNat n)) b)
+                      , k (Vec (2 ^ (ToNat n)) b, Vec (2 ^ (ToNat n)) a)
+                      , k (Vec (2 ^ (ToNat n)) a, Vec (2 ^ (ToNat n)) a)
+                      , k (Vec ((2 ^ (ToNat n)) + (2 ^ (ToNat n))) b)
+                      , k (b,b), k (Vec (2^(ToNat n)) (b,b))
+                      , k (b, (Vec (2 ^ (ToNat n)) b, Vec (2 ^ (ToNat n)) b))
+                      , k ( (Vec (2 ^ (ToNat n)) b, Vec (2 ^ (ToNat n)) b)
+                          , (Vec (2 ^ (ToNat n)) b, Vec (2 ^ (ToNat n)) b))
+                      , k ( (Vec (2 ^ (ToNat n)) b, Vec (2 ^ (ToNat n)) b)
+                          , Vec (2 ^ (ToNat n)) b)
+                      , k ( Vec (2 ^ (ToNat n)) b,
+                            (Vec (2 ^ (ToNat n)) b, Vec (2 ^ (ToNat n)) b))
+                      , k ((Vec (2 ^ (ToNat n)) b, Vec (2 ^ (ToNat n)) b), b)
+                      , MkCnstr ('S n) k a b
+                      , MkCnstr n k a b
+                      , Cnstr n k a b)
 
-nIf :: forall a (c :: Bool). Sing c -> a -> a -> a
-nIf STrue x _ = x
-nIf SFalse _ y = y
+butterflyR :: forall n t a b. ( ArrowVector Vec t, Cnstr n (C t) a b, KnownNat (ToNat n) )
+           => RNat n -> t a b -> t (b,b) b -> t (Vec (2 ^ (ToNat n)) a) (Vec (2 ^ (ToNat n)) b)
+butterflyR SZ f _ = amap f
+butterflyR (SS n) f g =
+  append . ((zipWithV g &&& (zipWithV g . (snd &&& fst))) . (butterflyR n f g *** butterflyR n f g)) . evensOdds
 
-ifZero :: SNat n -> IfNat n
-ifZero n = nIf (n %== (sing :: SNat 0)) (unsafeCoerce IfZero)
-           (unsafeCoerce (IfSucc m))
-  where
-    m = n %- (sing :: SNat 1)
-
-
-split :: forall n t a. (KnownNat n, ArrowVector t, C t a
-                 , C t (Vec ((2 ^ n) + (2 ^ n)) a), C t (Vec (2 ^ n) a),
-                 C t (Vec ((2 ^ (n - 1)) + (2 ^ (n - 1))) a),
-                         C t (Vec (2 ^ (n - 1)) a))
-      => Either (t (Vec (2^n) a) (Vec (2^n) a)) (t (Vec (2^n) a) (Vec (2^(n-1)) a, Vec (2^(n-1)) a))
-split = case ifZero n of
-          IfZero -> Left id
-          IfSucc _ -> Right splitVec
-
-  where
-    n = sing :: SNat n
-
-butterfly :: forall n t a b. ( KnownNat n, C t a, C t b, ArrowVector t , C t a,
-                       C t (Vec (2^n) a), C t (Vec (2^n) b), C t (b, b))
-          => t a b -> t (b,b) b -> t (Vec (2 ^ n) a) (Vec (2 ^ n) b)
-butterfly f g =
-  case ifZero n of
-    IfZero -> amap f
-    IfSucc (m :: SNat x) ->
-      case natDict @t ((sing :: SNat 2) %^ m) of
-        CDict -> case natDict @t (((sing :: SNat 2) %^ m) %+ ((sing :: SNat 2) %^ m)) of
-         CDict -> case natDict @t ((sing :: SNat 2) %* (sing :: SNat 2) %^ m) of
-          CDict -> case (vecDict @t @a @(2 ^ x), vecDict @t @b @(2 ^ x), vecDict @t @(b,b) @(2 ^ x)) of
-           (CDict, CDict, CDict) -> case (vecDict @t @a @((2 ^ x) + (2 ^ x)), vecDict @t @b @((2 ^ x) + (2 ^ x))) of
-             (CDict, CDict) -> case (pairDict @t @(Vec (2^x) a) @(Vec (2^x) a), pairDict @t @(Vec (2^x) b) @(Vec (2^x) b)) of
-               (CDict, CDict) -> case vecDict @t @a @(2 * (2 ^ x)) of
-                  CDict
-                    -> append . ((zipWithV g &&& (zipWithV g . (snd &&& fst))) . (butterfly f g *** butterfly f g)) . evensOdds
-  where
-    n = sing :: SNat n
+butterfly :: forall n m t a b. ( ArrowVector Vec t, Cnstr n (C t) a b, RecNat n, KnownNat (ToNat n), ToNat n ~ m )
+           => t a b -> t (b,b) b -> t (Vec (2 ^ m) a) (Vec (2 ^ m) b)
+butterfly f g = butterflyR (recNat :: RNat n) f g
 
 
-ex2Proto :: forall n. (Typeable (2^n), KnownNat n, Num (TMod n)) => (Vec (2^n) Int) :=> (Vec (2^n) Int)
-ex2Proto = butterfly @n id (wrap $ arr "(*)" (uncurry (*))) . vec (sing :: SNat (2^n)) (\l -> wrap (proj l))
+ex2Proto :: forall n m. (KnownNat n, Cnstr (FromNat n) Typeable Int Int, RecNat (FromNat n), ToNat (FromNat n) ~ n) => (Vec (2^n) Int) :=> (Vec (2^n) Int)
+ex2Proto = butterfly @(FromNat n) id (wrap $ arr "(*)" (uncurry (*))) . vec (\l -> wrap (proj l))
