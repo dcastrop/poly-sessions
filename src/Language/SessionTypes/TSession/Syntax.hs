@@ -334,8 +334,22 @@ instance Category (:=>) where
   id = gId
   (.) = gComp
 
+tryReuse :: Bool -> RoleGen m => r ::: a -> m (SomeSing Nat)
+tryReuse b (RI _ n) | b = toSing <$> fresh
+                    | otherwise = pure $ SomeSing n
+tryReuse _ (RP r1 _) = tryReuse False r1
+tryReuse b (RJ r1 _) = tryReuse b r1
+tryReuse _ RVZ = toSing <$> fresh
+tryReuse _ (RVS r1 _) = tryReuse False r1
+tryReuse b (RL _ r1) = tryReuse b r1
+tryReuse b (RR _ r1) = tryReuse b r1
+
+reuseRole :: forall a b r m t. (Typeable b, RoleGen m) => r ::: a -> (forall r'. r' ::: b -> m t) -> m t
+reuseRole r f = tryReuse True r >>= \(SomeSing n) -> f (RI PType n)
+
+
 wrap :: forall a b. (Typeable a, Typeable b) => a :-> b -> a :=> b
-wrap f = genFn $ \ri -> withNewRole PType $ \ro ->
+wrap f = genFn $ \ri -> reuseRole ri $ \ro ->
            return $ DPair ro $ TComm ri ro f
 
 gFst :: forall a b. (Typeable a, Typeable b)
@@ -444,9 +458,6 @@ data IsSing a where
 -- isSing SZ = IsSing Proxy
 -- isSing (SS n) = case isSing n of
                   -- IsSing Proxy -> IsSing Proxy
-
-data AnyRoleI a r where
-  AnyRoleI :: forall a n r. 'RId n ::: a -> r :==> 'RId n -> AnyRoleI a r
 
 gVgen :: forall a b n. (Typeable a, Typeable b, KnownNat n)
      => SNat n -> (TMod n -> a :=> b) -> a :=> Vec n b
