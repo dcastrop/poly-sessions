@@ -329,8 +329,7 @@ gComp f g
       DPair ro p2 <- getGen f rt
       return $ DPair ro $ TSeq rt p1 p2
 
-instance Category (:=>) where
-  type C (:=>) = Typeable
+instance Category Typeable (:=>) where
   id = gId
   (.) = gComp
 
@@ -376,10 +375,10 @@ gProd :: forall a b c d. (Typeable a, Typeable b, Typeable c, Typeable d)
       => a :=> b -> c :=> d -> (a, c) :=> (b, d)
 gProd f g = gSplit (f . gFst) (g . gSnd)
 
-instance Show a => Const a (:=>) where
+instance Show a => Const Typeable a (:=>) where
   const x = wrap (const x)
 
-instance Arrow (:=>) where
+instance Arrow Typeable (:=>) where
   arr s f = wrap (arr s f)
   fst = gFst
   snd = gSnd
@@ -426,7 +425,7 @@ gSum :: forall a b c d. (Typeable a, Typeable b, Typeable c, Typeable d)
      => a :=> c -> b :=> d -> Either a b :=> Either c d
 gSum f g = gCase (gInl . f) (gInr . g)
 
-instance ArrowChoice (:=>) where
+instance ArrowChoice Typeable (:=>) where
   inl = gInl
   inr = gInr
   (+++) = gSum
@@ -469,7 +468,7 @@ gVgen g = traverseIdx $ V.enum n
                               return $ unsafeCoerce $ DPair (RVS ro1 ro2) $ TSplit $ LS p l)
                           (genFn $ \ri -> return $ unsafeCoerce $ DPair (RVZ :: 'RProd '[] ::: Vec 0 a) $ TSplit $ LZ ri)
 
-instance ArrowVector Vec (:=>) where
+instance ArrowVector Typeable Vec (:=>) where
   proj = gGet
   vec = gVgen
 
